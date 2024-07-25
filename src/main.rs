@@ -167,21 +167,31 @@ fn valid_token_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
+fn is_token(current: &Vec<char>, min_len: usize) -> bool {
+    if current.len() < min_len {
+        return false;
+    }
+    if current.iter().all(|c| c.is_digit(10)) {
+        return false;
+    }
+    true
+}
+
 fn process_token(token: &str, min_len: usize) -> Vec<String> {
     let mut cleaned = Vec::new();
     let mut current: Vec<char> = Vec::new();
     for ch in token.chars() {
         if !valid_token_char(ch) {
-            if current.len() >= min_len {
+            if is_token(&current, min_len) {
                 cleaned.push(current.iter().collect());
             }
-            current = Vec::new();
+            current.clear();
         } else {
             current.push(ch);
         }
     }
 
-    if current.len() >= min_len {
+    if is_token(&current, min_len) {
         cleaned.push(current.iter().collect());
     }
     cleaned
