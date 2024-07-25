@@ -1,8 +1,10 @@
 mod trie;
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::Parser;
@@ -25,6 +27,10 @@ struct Snippet {
 struct LspArgs {
     #[arg(long)]
     snippet_folder: Option<String>,
+    #[arg(long)]
+    root_folder: Option<String>,
+    #[arg(long, default_value_t = 2)]
+    min_word_len: usize,
 }
 
 #[derive(Debug)]
@@ -62,7 +68,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let mut document_lock = self.documents.lock().await; document_lock.insert(
+        let mut document_lock = self.documents.lock().await;
+        document_lock.insert(
             params.text_document.uri.to_string(),
             params.text_document.text.clone(),
         );
@@ -96,40 +103,88 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let prefix = self.get_prefix(&params).await;
-        let trie_lock = self.trie.lock().await;
-        let completion_words = trie_lock.suggest_completions(&prefix);
-        let extension = get_file_extension(params.text_document_position.text_document.uri.to_string());
-        let snippets = self.suggest_snippets(&extension, &prefix).await;
+        let text_document_position = params.text_document_position.clone();
+        let position = text_document_position.position;
 
         let mut completions = Vec::new();
-        completions.append(
-            &mut completion_words
-                .into_iter()
-                .map(|word| CompletionItem {
-                    label: word.clone(),
-                    kind: Some(CompletionItemKind::TEXT),
-                    sort_text: Some(word.clone()),
-                    ..CompletionItem::default()
-                })
-                .collect(),
-        );
-        completions.append(
-            &mut snippets
-                .into_iter()
-                .map(|snippet| CompletionItem {
-                    label: snippet.name.clone(),
-                    kind: Some(CompletionItemKind::SNIPPET),
-                    documentation: Some(Documentation::String(snippet.snippet.clone())),
-                    ..CompletionItem::default()
-                })
-                .collect(),
-        );
+        if let Some(current_line) = self.get_current_line(&params).await {
+            let prefix = get_word_prefix(&current_line, position.character as i32);
 
-        completions.sort_by_key(|item| item.label.clone());
+            let trie_lock = self.trie.lock().await;
+            let completion_words = trie_lock.suggest_completions(&prefix);
+            completions.append(
+                &mut completion_words
+                    .into_iter()
+                    .map(|word| CompletionItem {
+                        label: word.clone(),
+                        kind: Some(CompletionItemKind::TEXT),
+                        sort_text: Some(word.clone()),
+                        ..CompletionItem::default()
+                    })
+                    .collect(),
+            );
+
+            let extension =
+                get_file_extension(params.text_document_position.text_document.uri.to_string());
+            let snippets = self.suggest_snippets(&extension, &prefix).await;
+            completions.append(
+                &mut snippets
+                    .into_iter()
+                    .map(|snippet| CompletionItem {
+                        label: snippet.name.clone(),
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        documentation: Some(Documentation::String(snippet.snippet.clone())),
+                        ..CompletionItem::default()
+                    })
+                    .collect(),
+            );
+
+            if let Some(root_folder) = self.lsp_args.root_folder.clone() {
+                let mut root = PathBuf::from(&root_folder);
+                let file_prefix = get_file_path_prefix(&current_line, position.character as i32);
+                root = root.join(&file_prefix);
+                let file_items = list_all_file_items(&root);
+                completions.append(
+                    &mut file_items
+                        .into_iter()
+                        .map(|file_item| CompletionItem {
+                            label: file_item.clone(),
+                            kind: Some(CompletionItemKind::FILE),
+                            ..CompletionItem::default()
+                        })
+                        .collect(),
+                );
+            }
+
+            completions.sort_by_key(|item| item.label.clone());
+        }
 
         Ok(Some(CompletionResponse::Array(completions)))
     }
+}
+
+fn valid_token_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn process_token(token: &str, min_len: usize) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    let mut current: Vec<char> = Vec::new();
+    for ch in token.chars() {
+        if !valid_token_char(ch) {
+            if current.len() >= min_len {
+                cleaned.push(current.iter().collect());
+            }
+            current = Vec::new();
+        } else {
+            current.push(ch);
+        }
+    }
+
+    if current.len() >= min_len {
+        cleaned.push(current.iter().collect());
+    }
+    cleaned
 }
 
 fn get_filename(path: String) -> String {
@@ -147,7 +202,7 @@ fn get_file_extension(path: String) -> String {
     let paths = path.split("/");
     match paths.last() {
         Some(filename) => match filename.rfind(".") {
-            Some(index) => filename[index+1..].to_string(),
+            Some(index) => filename[index + 1..].to_string(),
             None => filename.to_string(),
         },
         None => String::new(),
@@ -181,31 +236,62 @@ fn get_snippet_names(extension: &str) -> Vec<&str> {
     names
 }
 
-impl Backend {
-    fn process_token(token: &str) -> Vec<String> {
-        let mut cleaned = Vec::new();
-        let mut current: Vec<char> = Vec::new();
-        for ch in token.chars() {
-            if !ch.is_alphanumeric() {
-                if !current.is_empty() {
-                    cleaned.push(current.iter().collect());
-                    current = Vec::new();
+fn get_word_prefix(current_line: &str, character: i32) -> String {
+    let mut prefix = Vec::new();
+    let line: Vec<char> = current_line.chars().collect();
+    let mut i = (character - 1).min(line.len() as i32 - 1);
+    while i >= 0 && valid_token_char(line[i as usize]) {
+        prefix.push(line[i as usize]);
+        i -= 1;
+    }
+    prefix.reverse();
+    prefix.iter().collect()
+}
+
+fn valid_file_path_char(ch: char) -> bool {
+    ch.is_alphanumeric()
+        || ch == '_'
+        || ch == '/'
+        || ch == '-'
+        || ch == '('
+        || ch == ')'
+        || ch == '.'
+}
+
+fn get_file_path_prefix(line: &str, character: i32) -> String {
+    let mut prefix = Vec::new();
+    let line: Vec<char> = line.chars().collect();
+    let mut i = (character - 1).min(line.len() as i32 - 1);
+    while i >= 0 && valid_file_path_char(line[i as usize]) {
+        prefix.push(line[i as usize]);
+        i -= 1;
+    }
+    prefix.reverse();
+    prefix.iter().collect()
+}
+
+fn list_all_file_items(path: &Path) -> Vec<String> {
+    let read_result = fs::read_dir(path);
+    let mut result = Vec::new();
+    if let Ok(entries) = read_result {
+        for item in entries {
+            if let Ok(entry) = item {
+                let current = entry.path();
+                let filename = current.file_name().unwrap_or(OsStr::new("")).to_str();
+                if let Some(f) = filename {
+                    result.push(f.to_string());
                 }
-            } else {
-                current.push(ch);
             }
         }
-
-        if !current.is_empty() {
-            cleaned.push(current.iter().collect());
-        }
-        cleaned
     }
+    result
+}
 
+impl Backend {
     async fn add_words(&self, content: String) {
         let mut trie_lock = self.trie.lock().await;
         for token in content.split_whitespace() {
-            let words = Self::process_token(token);
+            let words = process_token(token, self.lsp_args.min_word_len);
             for w in words {
                 trie_lock.insert(&w);
             }
@@ -215,32 +301,25 @@ impl Backend {
     async fn remove_words(&self, content: String) {
         let mut trie_lock = self.trie.lock().await;
         for token in content.split_whitespace() {
-            let words = Self::process_token(token);
+            let words = process_token(token, self.lsp_args.min_word_len);
             for w in words {
                 trie_lock.remove(&w);
             }
         }
     }
 
-    async fn get_prefix(&self, params: &CompletionParams) -> String {
+    async fn get_current_line(&self, params: &CompletionParams) -> Option<String> {
         let text_document_position = params.text_document_position.clone();
         let uri = text_document_position.text_document.uri.to_string();
         let document_lock = self.documents.lock().await;
         let position = text_document_position.position;
-        let mut prefix = Vec::new();
         if let Some(content) = document_lock.get(&uri) {
             let current_line: Option<&str> = content.split("\n").nth(position.line as usize);
             if let Some(line) = current_line {
-                let line: Vec<char> = line.chars().collect();
-                let mut i = position.character as i32 - 1;
-                while i >= 0 && (i as usize) < line.len() && line[i as usize].is_alphanumeric() {
-                    prefix.push(line[i as usize]);
-                    i -= 1;
-                }
-                prefix.reverse();
+                return Some(line.to_string());
             }
         }
-        prefix.iter().collect()
+        None
     }
 
     fn read_snippet(path: &Path) -> Vec<Snippet> {
@@ -322,4 +401,72 @@ async fn main() {
         lsp_args: args,
     });
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_get_word_prefix() {
+        let prefix = get_word_prefix("   ios::sync_with_stdio", 24);
+        assert_eq!("sync_with_stdio", prefix);
+
+        let prefix = get_word_prefix("   int best = numeric_limits<int>::max();", 28);
+        assert_eq!("numeric_limits", prefix);
+
+        let prefix = get_word_prefix("   int best = numeric_limits<int>::max();", 38);
+        assert_eq!("max", prefix);
+    }
+
+    #[test]
+    fn test_process_token() {
+        let tokens = process_token("   aho_corasick(root.get())", 2);
+        assert_eq!(vec!["aho_corasick", "root", "get"], tokens);
+
+        let tokens = process_token(
+            "   vector<int> solve(string s, vector<int>& k, vector<string>& m)",
+            2,
+        );
+        assert_eq!(
+            vec!["vector", "int", "solve", "string", "vector", "int", "vector", "string"],
+            tokens
+        );
+
+        let tokens = process_token("   TrieNode* tn = node->failure", 3);
+        assert_eq!(vec!["TrieNode", "node", "failure"], tokens);
+    }
+
+    #[test]
+    fn test_get_file_path_prefix() {
+        let prefix = get_file_path_prefix("./some/path/to/here", 19);
+        assert_eq!("./some/path/to/here", prefix);
+
+        let prefix = get_file_path_prefix("  ./a/b/c/d/e.cc", 12);
+        assert_eq!("./a/b/c/d/", prefix);
+    }
+
+    #[test]
+    fn test_list_all_files() {
+        let items = list_all_file_items(Path::new("./"));
+        for item in items.iter() {
+            println!("item = {}", item);
+        }
+        assert!(items.iter().any(|s| s == "src"));
+        assert!(items.iter().any(|s| s == ".git"));
+        assert!(items.iter().any(|s| s == "README.md"));
+        assert!(items.iter().any(|s| s == ".gitignore"));
+        assert!(items.iter().any(|s| s == "Cargo.toml"));
+        assert!(items.iter().any(|s| s == "Cargo.lock"));
+
+        let items = list_all_file_items(Path::new("./src"));
+        for item in items.iter() {
+            println!("item = {}", item);
+        }
+        assert!(items.iter().any(|s| s == "main.rs"));
+        assert!(items.iter().any(|s| s == "trie.rs"));
+
+        let items = list_all_file_items(Path::new("doesnt_exist"));
+        assert_eq!(0, items.len());
+    }
 }

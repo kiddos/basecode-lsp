@@ -86,3 +86,74 @@ impl Trie {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trie_contains(trie: &Trie, word: &str) -> bool {
+        let mut it = &trie.root;
+        for ch in word.chars() {
+            if let Some(node) = it.children.get(&ch) {
+                it = &node;
+            } else {
+                return false;
+            }
+        }
+        it.word_count > 0
+    }
+
+    #[test]
+    fn test_insert_and_contains() {
+        let mut trie = Trie::new();
+
+        trie.insert("apple");
+        trie.insert("application");
+        trie.insert("banana");
+
+        assert!(trie_contains(&trie, "apple"));
+        assert!(trie_contains(&trie, "application"));
+        assert!(trie_contains(&trie, "banana"));
+        assert!(!trie_contains(&trie, "app"));
+        assert!(!trie_contains(&trie, "ape"));
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut trie = Trie::new();
+
+        trie.insert("apple");
+        trie.insert("application");
+        trie.insert("banana");
+
+        assert!(trie_contains(&trie, "apple"));
+        trie.remove("apple");
+        assert!(!trie_contains(&trie, "apple"));
+
+        assert!(trie_contains(&trie, "application"));
+        assert!(trie_contains(&trie, "banana"));
+    }
+
+    #[test]
+    fn test_suggest_completions() {
+        let mut trie = Trie::new();
+
+        trie.insert("apple");
+        trie.insert("application");
+        trie.insert("banana");
+        trie.insert("bat");
+        trie.insert("bear");
+
+        let mut completions = trie.suggest_completions("ap");
+        completions.sort();
+        assert_eq!(completions, vec!["apple", "application"]);
+
+        let mut completions = trie.suggest_completions("ba");
+        completions.sort();
+        assert_eq!(completions, vec!["banana", "bat"]);
+
+        let mut completions = trie.suggest_completions("b");
+        completions.sort();
+        assert_eq!(completions, vec!["banana", "bat", "bear"]);
+    }
+}
