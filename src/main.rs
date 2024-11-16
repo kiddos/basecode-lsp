@@ -1,5 +1,6 @@
 mod trie;
 
+use std::env;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -9,7 +10,8 @@ use std::sync::OnceLock;
 
 use clap::Parser;
 use glob::glob;
-use simple_log::error;
+use simple_log::{error, info};
+use simple_log::LogConfigBuilder;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -31,6 +33,8 @@ struct LspArgs {
     root_folder: Option<String>,
     #[arg(long, default_value_t = 2)]
     min_word_len: usize,
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Debug)]
@@ -45,6 +49,7 @@ struct Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         if let Some(snippet_folder) = self.lsp_args.snippet_folder.clone() {
+            info!("loading snippet folder: {}", snippet_folder);
             self.prepare_snippet(snippet_folder).await;
         }
 
@@ -124,9 +129,8 @@ impl LanguageServer for Backend {
                     .collect(),
             );
 
-            let extension =
-                get_file_extension(params.text_document_position.text_document.uri.to_string());
-            let snippets = self.suggest_snippets(&extension, &prefix).await;
+            let file_uri = params.text_document_position.text_document.uri.to_string();
+            let snippets = self.suggest_snippets(&file_uri, &prefix).await;
             completions.append(
                 &mut snippets
                     .into_iter()
@@ -208,39 +212,31 @@ fn get_filename(path: String) -> String {
     }
 }
 
-fn get_file_extension(path: String) -> String {
-    let paths = path.split("/");
-    match paths.last() {
-        Some(filename) => match filename.rfind(".") {
-            Some(index) => filename[index + 1..].to_string(),
-            None => filename.to_string(),
-        },
-        None => String::new(),
-    }
-}
-
-fn snippet_extensions() -> &'static HashMap<&'static str, Vec<&'static str>> {
+fn snippet_patterns() -> &'static HashMap<&'static str, Vec<&'static str>> {
     static SNIPPETS: OnceLock<HashMap<&str, Vec<&str>>> = OnceLock::new();
     SNIPPETS.get_or_init(|| {
         let mut m = HashMap::new();
-        m.insert("c", vec!["c", "h"]);
-        m.insert("cpp", vec!["cpp", "cc", "h", "hpp"]);
-        m.insert("cmake", vec!["cmake"]);
-        m.insert("dart", vec!["dart"]);
-        m.insert("json", vec!["json"]);
-        m.insert("python", vec!["python"]);
-        m.insert("rust", vec!["rust", "rs", "rst"]);
-        m.insert("sh", vec!["sh", "zsh"]);
-        m.insert("zsh", vec!["sh", "zsh"]);
+        m.insert("c", vec![".c", ".h"]);
+        m.insert("cpp", vec![".cpp", ".cc", ".h", ".hpp"]);
+        m.insert("cmake", vec![".cmake", "CMakeLists.txt"]);
+        m.insert("dart", vec![".dart"]);
+        m.insert("json", vec![".json"]);
+        m.insert("python", vec![".py", ".pyc"]);
+        m.insert("rust", vec![".rs", ".rst"]);
+        m.insert("sh", vec![".sh", ".zsh", ".bash"]);
+        m.insert("zsh", vec![".sh", ".zsh"]);
         m
     })
 }
 
-fn get_snippet_names(extension: &str) -> Vec<&str> {
+fn get_snippet_names(file_uri: &str) -> Vec<&str> {
     let mut names = Vec::new();
-    for (name, extensions) in snippet_extensions().iter() {
-        if extensions.contains(&extension) {
-            names.push(*name);
+    for (name, patterns) in snippet_patterns().iter() {
+        for p in patterns.iter() {
+            if file_uri.contains(*p) {
+                names.push(*name);
+                break;
+            }
         }
     }
     names
@@ -381,9 +377,9 @@ impl Backend {
         }
     }
 
-    async fn suggest_snippets(&self, extension: &str, prefix: &str) -> Vec<Snippet> {
+    async fn suggest_snippets(&self, file_uri: &str, prefix: &str) -> Vec<Snippet> {
         let snippet_lock = self.snippets.lock().await;
-        let snippet_names = get_snippet_names(extension);
+        let snippet_names = get_snippet_names(file_uri);
         let mut result = Vec::new();
         for &snippet_name in snippet_names.iter() {
             if let Some(snippets) = snippet_lock.get(snippet_name) {
@@ -398,9 +394,27 @@ impl Backend {
     }
 }
 
+fn setup_debug_logging() {
+    let mut temp_dir = env::temp_dir();
+    temp_dir.push("baselsp.log");
+    if let Some(log_path) = temp_dir.to_str() {
+        let config = LogConfigBuilder::builder()
+            .path(log_path)
+            .build();
+        if let Err(_e) = simple_log::new(config) {
+            error!("fail to setup log {}", log_path);
+            return;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = LspArgs::parse();
+
+    if args.debug {
+        setup_debug_logging();
+    }
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
