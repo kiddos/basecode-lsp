@@ -120,6 +120,7 @@ impl LanguageServer for Backend {
             completions.append(
                 &mut completion_words
                     .into_iter()
+                    .filter(|word| { word != &prefix })
                     .map(|word| CompletionItem {
                         label: word.clone(),
                         kind: Some(CompletionItemKind::TEXT),
