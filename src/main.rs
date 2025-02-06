@@ -1,28 +1,21 @@
+mod file;
+mod snippets;
 mod trie;
 
-use std::env;
 use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::fs;
-use std::path::Path;
+use std::env;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use clap::Parser;
-use glob::glob;
-use simple_log::{error, info};
+use file::{get_file_path_prefix, list_all_file_items};
 use simple_log::LogConfigBuilder;
+use simple_log::{error, info};
+use snippets::{get_snippet_names, prepare_snippet, Snippet};
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService, Server};
 use trie::Trie;
-
-#[derive(Debug, Clone)]
-struct Snippet {
-    name: String,
-    snippet: String,
-}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -50,7 +43,8 @@ impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         if let Some(snippet_folder) = self.lsp_args.snippet_folder.clone() {
             info!("loading snippet folder: {}", snippet_folder);
-            self.prepare_snippet(snippet_folder).await;
+            let mut snippets_lock = self.snippets.lock().await;
+            prepare_snippet(snippet_folder, &mut snippets_lock);
         }
 
         Ok(InitializeResult {
@@ -120,7 +114,7 @@ impl LanguageServer for Backend {
             completions.append(
                 &mut completion_words
                     .into_iter()
-                    .filter(|word| { word != &prefix })
+                    .filter(|word| word != &prefix)
                     .map(|word| CompletionItem {
                         label: word.clone(),
                         kind: Some(CompletionItemKind::TEXT),
@@ -202,47 +196,6 @@ fn process_token(token: &str, min_len: usize) -> Vec<String> {
     cleaned
 }
 
-fn get_filename(path: String) -> String {
-    let paths = path.split("/");
-    match paths.last() {
-        Some(filename) => match filename.find(".") {
-            Some(index) => filename[0..index].to_string(),
-            None => filename.to_string(),
-        },
-        None => String::new(),
-    }
-}
-
-fn snippet_patterns() -> &'static HashMap<&'static str, Vec<&'static str>> {
-    static SNIPPETS: OnceLock<HashMap<&str, Vec<&str>>> = OnceLock::new();
-    SNIPPETS.get_or_init(|| {
-        let mut m = HashMap::new();
-        m.insert("c", vec![".c", ".h"]);
-        m.insert("cpp", vec![".cpp", ".cc", ".h", ".hpp"]);
-        m.insert("cmake", vec![".cmake", "CMakeLists.txt"]);
-        m.insert("dart", vec![".dart"]);
-        m.insert("json", vec![".json"]);
-        m.insert("python", vec![".py", ".pyc"]);
-        m.insert("rust", vec![".rs", ".rst"]);
-        m.insert("sh", vec![".sh", ".zsh", ".bash"]);
-        m.insert("zsh", vec![".sh", ".zsh"]);
-        m
-    })
-}
-
-fn get_snippet_names(file_uri: &str) -> Vec<&str> {
-    let mut names = Vec::new();
-    for (name, patterns) in snippet_patterns().iter() {
-        for p in patterns.iter() {
-            if file_uri.contains(*p) {
-                names.push(*name);
-                break;
-            }
-        }
-    }
-    names
-}
-
 fn get_word_prefix(current_line: &str, character: i32) -> String {
     let mut prefix = Vec::new();
     let line: Vec<char> = current_line.chars().collect();
@@ -253,45 +206,6 @@ fn get_word_prefix(current_line: &str, character: i32) -> String {
     }
     prefix.reverse();
     prefix.iter().collect()
-}
-
-fn valid_file_path_char(ch: char) -> bool {
-    ch.is_alphanumeric()
-        || ch == '_'
-        || ch == '/'
-        || ch == '-'
-        || ch == '('
-        || ch == ')'
-        || ch == '.'
-}
-
-fn get_file_path_prefix(line: &str, character: i32) -> String {
-    let mut prefix = Vec::new();
-    let line: Vec<char> = line.chars().collect();
-    let mut i = (character - 1).min(line.len() as i32 - 1);
-    while i >= 0 && valid_file_path_char(line[i as usize]) {
-        prefix.push(line[i as usize]);
-        i -= 1;
-    }
-    prefix.reverse();
-    prefix.iter().collect()
-}
-
-fn list_all_file_items(path: &Path) -> Vec<String> {
-    let read_result = fs::read_dir(path);
-    let mut result = Vec::new();
-    if let Ok(entries) = read_result {
-        for item in entries {
-            if let Ok(entry) = item {
-                let current = entry.path();
-                let filename = current.file_name().unwrap_or(OsStr::new("")).to_str();
-                if let Some(f) = filename {
-                    result.push(f.to_string());
-                }
-            }
-        }
-    }
-    result
 }
 
 impl Backend {
@@ -329,55 +243,6 @@ impl Backend {
         None
     }
 
-    fn read_snippet(path: &Path) -> Vec<Snippet> {
-        let mut snippets = Vec::new();
-        if let Ok(content) = fs::read_to_string(path) {
-            let lines: Vec<&str> = content.split("\n").collect();
-            let mut i = 0;
-            while i < lines.len() {
-                let line = lines[i];
-                if line.starts_with("snippet") {
-                    let snippet_name = &line[("snippet".len() + 1)..];
-                    i += 1;
-                    let mut content_lines = Vec::new();
-                    while i < lines.len() && !lines[i].starts_with("snippet") {
-                        if !lines[i].starts_with("#") {
-                            content_lines.push(lines[i].trim_start());
-                        }
-                        i += 1;
-                    }
-                    snippets.push(Snippet {
-                        name: snippet_name.to_string(),
-                        snippet: content_lines.join("\n").to_string(),
-                    });
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        snippets
-    }
-
-    async fn prepare_snippet(&self, snippet_path: String) {
-        let target = format!("{}/*.snippets", snippet_path);
-        if let Ok(paths) = glob(&target) {
-            let mut snippet_lock = self.snippets.lock().await;
-            for entry in paths {
-                match entry {
-                    Ok(path) => {
-                        let p = path.as_path();
-                        let filename = get_filename(p.display().to_string());
-                        let all_snippets = Self::read_snippet(&p);
-                        snippet_lock.insert(filename, all_snippets);
-                    }
-                    Err(e) => {
-                        error!("{:?}", e);
-                    }
-                }
-            }
-        }
-    }
-
     async fn suggest_snippets(&self, file_uri: &str, prefix: &str) -> Vec<Snippet> {
         let snippet_lock = self.snippets.lock().await;
         let snippet_names = get_snippet_names(file_uri);
@@ -399,9 +264,7 @@ fn setup_debug_logging() {
     let mut temp_dir = env::temp_dir();
     temp_dir.push("baselsp.log");
     if let Some(log_path) = temp_dir.to_str() {
-        let config = LogConfigBuilder::builder()
-            .path(log_path)
-            .build();
+        let config = LogConfigBuilder::builder().path(log_path).build();
         if let Err(_e) = simple_log::new(config) {
             error!("fail to setup log {}", log_path);
             return;
@@ -460,38 +323,5 @@ mod test {
 
         let tokens = process_token("   TrieNode* tn = node->failure", 3);
         assert_eq!(vec!["TrieNode", "node", "failure"], tokens);
-    }
-
-    #[test]
-    fn test_get_file_path_prefix() {
-        let prefix = get_file_path_prefix("./some/path/to/here", 19);
-        assert_eq!("./some/path/to/here", prefix);
-
-        let prefix = get_file_path_prefix("  ./a/b/c/d/e.cc", 12);
-        assert_eq!("./a/b/c/d/", prefix);
-    }
-
-    #[test]
-    fn test_list_all_files() {
-        let items = list_all_file_items(Path::new("./"));
-        for item in items.iter() {
-            println!("item = {}", item);
-        }
-        assert!(items.iter().any(|s| s == "src"));
-        assert!(items.iter().any(|s| s == ".git"));
-        assert!(items.iter().any(|s| s == "README.md"));
-        assert!(items.iter().any(|s| s == ".gitignore"));
-        assert!(items.iter().any(|s| s == "Cargo.toml"));
-        assert!(items.iter().any(|s| s == "Cargo.lock"));
-
-        let items = list_all_file_items(Path::new("./src"));
-        for item in items.iter() {
-            println!("item = {}", item);
-        }
-        assert!(items.iter().any(|s| s == "main.rs"));
-        assert!(items.iter().any(|s| s == "trie.rs"));
-
-        let items = list_all_file_items(Path::new("doesnt_exist"));
-        assert_eq!(0, items.len());
     }
 }
