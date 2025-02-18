@@ -155,5 +155,31 @@ mod tests {
         let mut completions = trie.suggest_completions("b");
         completions.sort();
         assert_eq!(completions, vec!["banana", "bat", "bear"]);
+
+        let completions = trie.suggest_completions("nonexistent");
+        assert_eq!(completions, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_remove_nonexistent() {
+        let mut trie = Trie::new();
+
+        trie.insert("apple");
+        trie.remove("nonexistent");
+        assert!(trie_contains(&trie, "apple"));
+    }
+
+    #[test]
+    fn test_remove_multiple() {
+        let mut trie = Trie::new();
+
+        trie.insert("apple");
+        trie.insert("apple");
+        assert!(trie_contains(&trie, "apple"));
+
+        trie.remove("apple");
+        assert!(trie_contains(&trie, "apple"));
+        trie.remove("apple");
+        assert!(!trie_contains(&trie, "apple"));
     }
 }
