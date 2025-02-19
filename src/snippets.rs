@@ -15,7 +15,7 @@ pub fn snippet_patterns() -> &'static HashMap<&'static str, Vec<&'static str>> {
     static SNIPPETS: OnceLock<HashMap<&str, Vec<&str>>> = OnceLock::new();
     SNIPPETS.get_or_init(|| {
         let mut m = HashMap::new();
-        m.insert("c", vec![".c", ".h"]);
+        m.insert("c", vec![".c", ".h", ".cc", ".cpp"]);
         m.insert("cpp", vec![".cpp", ".cc", ".h", ".hpp"]);
         m.insert("cmake", vec![".cmake", "CMakeLists.txt"]);
         m.insert("dart", vec![".dart"]);
@@ -36,7 +36,7 @@ pub fn get_snippet_names(file_uri: &str) -> Vec<&str> {
     let mut names = Vec::new();
     for (name, patterns) in snippet_patterns().iter() {
         for p in patterns.iter() {
-            if file_uri.contains(*p) {
+            if file_uri.ends_with(*p) {
                 names.push(*name);
                 break;
             }
@@ -45,33 +45,55 @@ pub fn get_snippet_names(file_uri: &str) -> Vec<&str> {
     names
 }
 
-fn read_snippet(path: &Path) -> Vec<Snippet> {
+fn transform_line(input: &str) -> String {
+    let mut found_first_tab = false;
+    let mut result = String::new();
+    for ch in input.chars() {
+        if ch == '\t' {
+            if !found_first_tab {
+                found_first_tab = true;
+                continue;
+            }
+            result.push_str("  ");
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn parse_snippets(content: &str) -> Vec<Snippet> {
     let mut snippets = Vec::new();
-    if let Ok(content) = fs::read_to_string(path) {
-        let lines: Vec<&str> = content.split("\n").collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i];
-            if line.starts_with("snippet") {
-                let snippet_name = &line[("snippet".len() + 1)..];
-                i += 1;
-                let mut content_lines = Vec::new();
-                while i < lines.len() && !lines[i].starts_with("snippet") {
-                    if !lines[i].starts_with("#") {
-                        content_lines.push(lines[i].trim_start());
-                    }
-                    i += 1;
+    let lines: Vec<&str> = content.split("\n").collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("snippet") {
+            let snippet_name = &line[("snippet".len() + 1)..];
+            i += 1;
+            let mut content_lines = Vec::new();
+            while i < lines.len() && !lines[i].starts_with("snippet") {
+                if !lines[i].starts_with("#") && lines[i].starts_with("\t") {
+                    content_lines.push(transform_line(lines[i]));
                 }
-                snippets.push(Snippet {
-                    name: snippet_name.to_string(),
-                    snippet: content_lines.join("\n").to_string(),
-                });
-            } else {
                 i += 1;
             }
+            snippets.push(Snippet {
+                name: snippet_name.to_string(),
+                snippet: content_lines.join("\n").to_string(),
+            });
+        } else {
+            i += 1;
         }
     }
     snippets
+}
+
+fn read_snippet(path: &Path) -> Vec<Snippet> {
+    if let Ok(content) = fs::read_to_string(path) {
+        return parse_snippets(&content);
+    }
+    Vec::new()
 }
 
 fn get_file_basename(path: String) -> String {
@@ -115,5 +137,59 @@ mod test {
 
         let filename = get_file_basename("102938 !#@#! abcdqweio.txt".to_string());
         assert_eq!("102938 !#@#! abcdqweio", filename);
+    }
+
+
+    #[test]
+    fn test_parse_snippets() {
+        let content = "snippet main
+\tint main(void) {
+\t\t// code here...
+\t\treturn 0;
+\t}";
+        let snippets = parse_snippets(content);
+        assert_eq!(1, snippets.len());
+
+        let snippet = &snippets[0];
+        assert_eq!("main", snippet.name);
+        assert_eq!("int main(void) {
+  // code here...
+  return 0;
+}", snippet.snippet);
+    }
+
+    #[test]
+    fn test_transform_line() {
+        let transformed = transform_line("\t\treturn 0;");
+        assert_eq!("  return 0;", transformed);
+    }
+
+    #[test]
+    fn test_get_snippet_names() {
+        let names = get_snippet_names("main.cpp");
+        let expect_included = vec!["cpp", "c"];
+        for t in expect_included.iter() {
+            assert!(names.contains(t));
+        }
+
+        let names = get_snippet_names("main.cc");
+        let expect_included = vec!["cpp", "c"];
+        for t in expect_included.iter() {
+            assert!(names.contains(t));
+        }
+
+        let names = get_snippet_names("main.cmake");
+        assert!(names.contains(&"cmake"));
+
+        let names = get_snippet_names("CMakeLists.txt");
+        assert!(names.contains(&"cmake"));
+    }
+
+    #[test]
+    fn test_snippet_patterns() {
+        let patterns = snippet_patterns();
+        assert!(patterns.contains_key("c"));
+        assert!(patterns.contains_key("cpp"));
+        assert!(patterns.get("rust").unwrap().contains(&".rs"));
     }
 }
