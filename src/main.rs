@@ -54,6 +54,7 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
+                    trigger_characters: Some(vec!["/".to_string(), "\"".to_string(), "'".to_string()]),
                     ..CompletionOptions::default()
                 }),
                 ..ServerCapabilities::default()
@@ -132,7 +133,7 @@ impl LanguageServer for Backend {
                     .map(|snippet| CompletionItem {
                         label: snippet.name.clone(),
                         kind: Some(CompletionItemKind::SNIPPET),
-                        documentation: Some(Documentation::String(snippet.snippet.clone())),
+                        documentation: Some(Documentation::String(snippet.markdown())),
                         ..CompletionItem::default()
                     })
                     .collect(),

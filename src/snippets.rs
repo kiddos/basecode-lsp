@@ -1,7 +1,7 @@
 use glob::glob;
-use std::fs;
 use simple_log::error;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -9,6 +9,17 @@ use std::sync::OnceLock;
 pub struct Snippet {
     pub name: String,
     pub snippet: String,
+    pub filetype: String,
+}
+
+impl Snippet {
+    pub fn markdown(&self) -> String {
+        format!(
+            "```{format}\n{snippet}```",
+            format = self.filetype,
+            snippet = self.snippet
+        )
+    }
 }
 
 pub fn snippet_patterns() -> &'static HashMap<&'static str, Vec<&'static str>> {
@@ -62,7 +73,7 @@ fn transform_line(input: &str) -> String {
     result
 }
 
-fn parse_snippets(content: &str) -> Vec<Snippet> {
+fn parse_snippets(content: &str, filetype: &str) -> Vec<Snippet> {
     let mut snippets = Vec::new();
     let lines: Vec<&str> = content.split("\n").collect();
     let mut i = 0;
@@ -81,6 +92,7 @@ fn parse_snippets(content: &str) -> Vec<Snippet> {
             snippets.push(Snippet {
                 name: snippet_name.to_string(),
                 snippet: content_lines.join("\n").to_string(),
+                filetype: filetype.to_string(),
             });
         } else {
             i += 1;
@@ -89,9 +101,9 @@ fn parse_snippets(content: &str) -> Vec<Snippet> {
     snippets
 }
 
-fn read_snippet(path: &Path) -> Vec<Snippet> {
+fn read_snippet(path: &Path, filetype: &str) -> Vec<Snippet> {
     if let Ok(content) = fs::read_to_string(path) {
-        return parse_snippets(&content);
+        return parse_snippets(&content, filetype);
     }
     Vec::new()
 }
@@ -115,7 +127,7 @@ pub fn prepare_snippet(snippet_path: String, snippets: &mut HashMap<String, Vec<
                 Ok(path) => {
                     let p = path.as_path();
                     let filename = get_file_basename(p.display().to_string());
-                    let all_snippets = read_snippet(&p);
+                    let all_snippets = read_snippet(&p, &filename);
                     snippets.insert(filename, all_snippets);
                 }
                 Err(e) => {
@@ -139,7 +151,6 @@ mod test {
         assert_eq!("102938 !#@#! abcdqweio", filename);
     }
 
-
     #[test]
     fn test_parse_snippets() {
         let content = "snippet main
@@ -147,15 +158,50 @@ mod test {
 \t\t// code here...
 \t\treturn 0;
 \t}";
-        let snippets = parse_snippets(content);
+        let snippets = parse_snippets(content, "cpp");
         assert_eq!(1, snippets.len());
 
         let snippet = &snippets[0];
         assert_eq!("main", snippet.name);
-        assert_eq!("int main(void) {
+        assert_eq!(
+            "int main(void) {
   // code here...
   return 0;
-}", snippet.snippet);
+}",
+            snippet.snippet
+        );
+
+        let content = "snippet for
+\tfor (size_t i = 0; i < count; i++) {
+\t\t/* code */
+\t}";
+        let snippets = parse_snippets(content, "cpp");
+        assert_eq!(1, snippets.len());
+
+        let snippet = &snippets[0];
+        assert_eq!("for", snippet.name);
+        assert_eq!(
+            "for (size_t i = 0; i < count; i++) {
+  /* code */
+}",
+            snippet.snippet
+        );
+
+        let content = "snippet if
+\tif (condition) {
+\t\t/* code */
+\t}";
+        let snippets = parse_snippets(content, "cpp");
+        assert_eq!(1, snippets.len());
+
+        let snippet = &snippets[0];
+        assert_eq!("if", snippet.name);
+        assert_eq!(
+            "if (condition) {
+  /* code */
+}",
+            snippet.snippet
+        );
     }
 
     #[test]
