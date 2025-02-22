@@ -111,7 +111,7 @@ fn read_snippet(path: &Path, filetype: &str) -> Vec<Snippet> {
 fn get_file_basename(path: String) -> String {
     let paths = path.split("/");
     match paths.last() {
-        Some(filename) => match filename.find(".") {
+        Some(filename) => match filename.rfind(".") {
             Some(index) => filename[0..index].to_string(),
             None => filename.to_string(),
         },
@@ -149,6 +149,12 @@ mod test {
 
         let filename = get_file_basename("102938 !#@#! abcdqweio.txt".to_string());
         assert_eq!("102938 !#@#! abcdqweio", filename);
+
+        let filename = get_file_basename("hello".to_string());
+        assert_eq!("hello", filename);
+
+        let filename = get_file_basename("hello.world.txt".to_string());
+        assert_eq!("hello.world", filename);
     }
 
     #[test]
