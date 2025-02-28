@@ -1,0 +1,75 @@
+name: Rust Release
+
+on:
+  release:
+    types: [created]  # Trigger when a new GitHub release is created
+
+jobs:
+  build:
+    name: Build Rust Binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: myapp-linux
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: myapp-macos
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: myapp-windows.exe
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename Binary
+        run: |
+          mkdir artifacts
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            mv target/${{ matrix.target }}/release/myapp.exe artifacts/${{ matrix.artifact }}
+          else
+            mv target/${{ matrix.target }}/release/myapp artifacts/${{ matrix.artifact }}
+          fi
+        shell: bash
+
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifacts/${{ matrix.artifact }}
+
+  release:
+    name: Upload to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download All Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display Downloaded Files
+        run: ls -R artifacts
+
+      - name: Upload Binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
