@@ -8,6 +8,9 @@ and keyword recognition across multiple programming languages. It aims to enhanc
 - [x] word completion
 - [x] snippet completion
 - [x] file path completion
+- [ ] spellcheck
+- [ ] tmux
+- [ ] cmdline
 
 ## Installation
 
