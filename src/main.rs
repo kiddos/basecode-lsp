@@ -4,10 +4,9 @@ mod trie;
 
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
 
 use clap::Parser;
-use file::{get_file_path_prefix, list_all_file_items};
+use file::get_file_items;
 use simple_log::LogConfigBuilder;
 use simple_log::{error, info};
 use snippets::{get_snippet_names, prepare_snippet, Snippet};
@@ -47,6 +46,7 @@ impl LanguageServer for Backend {
             prepare_snippet(snippet_folder, &mut snippets_lock);
         }
 
+        let trigger_characters = Some(vec!["/".to_string(), "\"".to_string(), "'".to_string()]);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -54,7 +54,7 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec!["/".to_string(), "\"".to_string(), "'".to_string()]),
+                    trigger_characters,
                     ..CompletionOptions::default()
                 }),
                 ..ServerCapabilities::default()
@@ -64,6 +64,7 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        info!("shutdown basecode-lsp");
         Ok(())
     }
 
@@ -111,54 +112,18 @@ impl LanguageServer for Backend {
             let prefix = get_word_prefix(&current_line, position.character as i32);
 
             let trie_lock = self.trie.lock().await;
-            let completion_words = trie_lock.suggest_completions(&prefix);
-            completions.append(
-                &mut completion_words
-                    .into_iter()
-                    .filter(|word| word != &prefix)
-                    .map(|word| CompletionItem {
-                        label: word.clone(),
-                        kind: Some(CompletionItemKind::TEXT),
-                        sort_text: Some(word.clone()),
-                        ..CompletionItem::default()
-                    })
-                    .collect(),
-            );
+            let words = trie_lock.suggest_completions(&prefix);
+            words_to_completion_items(words, &prefix, &mut completions);
 
             let file_uri = params.text_document_position.text_document.uri.to_string();
             let snippets = self.suggest_snippets(&file_uri, &prefix).await;
-            completions.append(
-                &mut snippets
-                    .into_iter()
-                    .map(|snippet| CompletionItem {
-                        label: snippet.name.clone(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        documentation: Some(Documentation::String(snippet.markdown())),
-                        ..CompletionItem::default()
-                    })
-                    .collect(),
-            );
+            snippets_to_completion_items(snippets, &mut completions);
 
             if let Some(root_folder) = self.lsp_args.root_folder.clone() {
-                let mut root = PathBuf::from(&root_folder);
-                let file_prefix = get_file_path_prefix(&current_line, position.character as i32);
-                root = root.join(&file_prefix);
-                let file_items = list_all_file_items(&root);
-                completions.append(
-                    &mut file_items
-                        .into_iter()
-                        .map(|file_item| CompletionItem {
-                            label: file_item.clone(),
-                            kind: Some(CompletionItemKind::FILE),
-                            ..CompletionItem::default()
-                        })
-                        .collect(),
-                );
+                let file_items = get_file_items(&current_line, &root_folder);
+                file_items_to_completion_items(file_items, &mut completions);
             }
-
-            completions.sort_by_key(|item| item.label.clone());
         }
-
         Ok(Some(CompletionResponse::Array(completions)))
     }
 }
@@ -207,6 +172,49 @@ fn get_word_prefix(current_line: &str, character: i32) -> String {
     }
     prefix.reverse();
     prefix.iter().collect()
+}
+
+fn words_to_completion_items(
+    words: Vec<String>,
+    prefix: &String,
+    completions: &mut Vec<CompletionItem>,
+) {
+    let mut items: Vec<CompletionItem> = words
+        .iter()
+        .filter(|&word| word != prefix)
+        .map(|word| CompletionItem {
+            label: word.clone(),
+            kind: Some(CompletionItemKind::TEXT),
+            sort_text: Some(word.clone()),
+            ..CompletionItem::default()
+        })
+        .collect();
+    completions.append(&mut items);
+}
+
+fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Vec<CompletionItem>) {
+    let mut items: Vec<CompletionItem> = snippets
+        .into_iter()
+        .map(|snippet| CompletionItem {
+            label: snippet.name.clone(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            documentation: Some(Documentation::String(snippet.markdown())),
+            ..CompletionItem::default()
+        })
+        .collect();
+    completions.append(&mut items);
+}
+
+fn file_items_to_completion_items(file_items: Vec<String>, completions: &mut Vec<CompletionItem>) {
+    let mut items: Vec<CompletionItem> = file_items
+        .into_iter()
+        .map(|file_item| CompletionItem {
+            label: file_item.clone(),
+            kind: Some(CompletionItemKind::FILE),
+            ..CompletionItem::default()
+        })
+        .collect();
+    completions.append(&mut items);
 }
 
 impl Backend {
