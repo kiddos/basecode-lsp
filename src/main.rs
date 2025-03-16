@@ -113,7 +113,8 @@ impl LanguageServer for Backend {
 
             let trie_lock = self.trie.lock().await;
             let words = trie_lock.suggest_completions(&prefix);
-            words_to_completion_items(words, &prefix, &mut completions);
+            let suffixes = get_word_suffixes(&current_line, position.character as i32);
+            words_to_completion_items(words, &suffixes, &mut completions);
 
             let file_uri = params.text_document_position.text_document.uri.to_string();
             let snippets = self.suggest_snippets(&file_uri, &prefix).await;
@@ -174,14 +175,27 @@ fn get_word_prefix(current_line: &str, character: i32) -> String {
     prefix.iter().collect()
 }
 
+fn get_word_suffixes(current_line: &str, character: i32) -> Vec<String> {
+    let mut suffixes: Vec<String> = Vec::new();
+    let line: Vec<char> = current_line.chars().collect();
+    let mut i = character.min(line.len() as i32 - 1);
+    let mut current = Vec::new();
+    while (i as usize) < line.len() && valid_token_char(line[i as usize]) {
+        current.push(line[i as usize]);
+        suffixes.push(current.iter().collect());
+        i += 1;
+    }
+    suffixes
+}
+
 fn words_to_completion_items(
     words: Vec<String>,
-    prefix: &String,
+    suffixes: &Vec<String>,
     completions: &mut Vec<CompletionItem>,
 ) {
     let mut items: Vec<CompletionItem> = words
         .iter()
-        .filter(|&word| word != prefix)
+        .filter(|&word| !suffixes.contains(word))
         .map(|word| CompletionItem {
             label: word.clone(),
             kind: Some(CompletionItemKind::TEXT),
@@ -314,6 +328,36 @@ mod test {
 
         let prefix = get_word_prefix("   int best = numeric_limits<int>::max();", 38);
         assert_eq!("max", prefix);
+    }
+
+    #[test]
+    fn test_get_word_suffixes() {
+        let suffixes = get_word_suffixes("   ios::sync", 8);
+        assert_eq!(vec!["s", "sy", "syn", "sync"], suffixes);
+
+        let suffixes = get_word_suffixes("   int best = numeric_limits<int>::max();", 14);
+        assert_eq!(
+            vec![
+                "n",
+                "nu",
+                "num",
+                "nume",
+                "numer",
+                "numeri",
+                "numeric",
+                "numeric_",
+                "numeric_l",
+                "numeric_li",
+                "numeric_lim",
+                "numeric_limi",
+                "numeric_limit",
+                "numeric_limits"
+            ],
+            suffixes
+        );
+
+        let suffixes = get_word_suffixes("   int best = numeric_limits<int>::max();", 35);
+        assert_eq!(vec!["m", "ma", "max"], suffixes);
     }
 
     #[test]
