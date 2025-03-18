@@ -1,5 +1,6 @@
 mod file;
 mod snippets;
+mod tmux;
 mod trie;
 
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use file::get_file_items;
 use simple_log::LogConfigBuilder;
 use simple_log::{error, info};
 use snippets::{get_snippet_names, prepare_snippet, Snippet};
+use tmux::retrieve_tmux_words;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -25,6 +27,8 @@ struct LspArgs {
     root_folder: Option<String>,
     #[arg(long, default_value_t = 2)]
     min_word_len: usize,
+    #[arg(long, default_value_t = true)]
+    tmux_source: bool,
     #[arg(long)]
     debug: bool,
 }
@@ -34,6 +38,7 @@ struct Backend {
     documents: Mutex<HashMap<String, String>>,
     snippets: Mutex<HashMap<String, Vec<Snippet>>>,
     trie: Mutex<Trie>,
+    tmux_source: Mutex<Vec<String>>,
     lsp_args: LspArgs,
 }
 
@@ -76,6 +81,7 @@ impl LanguageServer for Backend {
         );
 
         self.add_words(params.text_document.text.clone()).await;
+        self.maybe_update_tmux().await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -86,6 +92,7 @@ impl LanguageServer for Backend {
             self.remove_words(content.clone()).await;
         }
         document_lock.remove(&uri);
+        self.maybe_update_tmux().await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -101,6 +108,7 @@ impl LanguageServer for Backend {
         for content_change in params.content_changes.iter() {
             self.add_words(content_change.text.clone()).await;
         }
+        self.maybe_update_tmux().await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -115,6 +123,9 @@ impl LanguageServer for Backend {
             let words = trie_lock.suggest_completions(&prefix);
             let suffixes = get_word_suffixes(&current_line, position.character as i32);
             words_to_completion_items(words, &suffixes, &mut completions);
+
+            let tmux_words = self.prepare_tmux_words().await;
+            words_to_completion_items(tmux_words, &suffixes, &mut completions);
 
             let file_uri = params.text_document_position.text_document.uri.to_string();
             let snippets = self.suggest_snippets(&file_uri, &prefix).await;
@@ -281,6 +292,24 @@ impl Backend {
         }
         result
     }
+
+    async fn maybe_update_tmux(&self) {
+        if self.lsp_args.tmux_source {
+            let tmux_content = retrieve_tmux_words();
+            let mut data = self.tmux_source.lock().await;
+            data.clear();
+            data.extend(tmux_content);
+        }
+    }
+
+    async fn prepare_tmux_words(&self) -> Vec<String> {
+        let data = self.tmux_source.lock().await;
+        let mut output = Vec::new();
+        for word in data.iter() {
+            output.push(word.clone());
+        }
+        output
+    }
 }
 
 fn setup_debug_logging() {
@@ -309,6 +338,7 @@ async fn main() {
         documents: Mutex::new(HashMap::new()),
         snippets: Mutex::new(HashMap::new()),
         trie: Mutex::new(Trie::new()),
+        tmux_source: Mutex::new(Vec::new()),
         lsp_args: args,
     });
     Server::new(stdin, stdout, socket).serve(service).await;
