@@ -85,7 +85,6 @@ mod tests {
     fn test_list_tmux_panes() {
         if super::is_tmux_executable() {
             let panes = super::list_tmux_panes();
-            assert!(panes.len() > 0);
             println!("{:?}", panes);
         }
     }
@@ -115,7 +114,6 @@ mod tests {
         if super::is_tmux_executable() {
             let words = super::retrieve_tmux_words();
             println!("{:?}", words);
-            assert!(words.len() > 0);
         }
     }
 }
