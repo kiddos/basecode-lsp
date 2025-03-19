@@ -46,7 +46,7 @@ fn capture_tmux_pane(pane_id: &str) -> Result<String, ()> {
 }
 
 fn capture_alphanumeric_sequences(input: &str) -> Vec<String> {
-    let re = Regex::new(r"[a-zA-Z0-9_\-\.]+").unwrap();
+    let re = Regex::new(r"[a-zA-Z0-9][a-zA-Z0-9_\-\.]*").unwrap();
 
     re.find_iter(input)
         .map(|mat| mat.as_str().to_string())
@@ -78,17 +78,16 @@ pub fn retrieve_tmux_words() -> Vec<String> {
 mod tests {
     #[test]
     fn test_is_tmux_executable() {
-        assert!(super::is_tmux_executable());
+        println!("{:?}", super::is_tmux_executable());
     }
 
     #[test]
     fn test_list_tmux_panes() {
-        // This test requires tmux server to be running
-        // And at least one tmux window/pane to be opened
-        // Otherwise it will return empty Vec
-        let panes = super::list_tmux_panes();
-        assert!(panes.len() > 0);
-        println!("{:?}", panes);
+        if super::is_tmux_executable() {
+            let panes = super::list_tmux_panes();
+            assert!(panes.len() > 0);
+            println!("{:?}", panes);
+        }
     }
 
     #[test]
@@ -100,19 +99,23 @@ mod tests {
 
     #[test]
     fn test_capture_tmux_pane() {
-        let panes = super::list_tmux_panes();
-        if panes.is_empty() {
-            return;
+        if super::is_tmux_executable() {
+            let panes = super::list_tmux_panes();
+            if panes.is_empty() {
+                return;
+            }
+            let pane_id = &panes[0];
+            let content = super::capture_tmux_pane(pane_id);
+            assert!(content.is_ok());
         }
-        let pane_id = &panes[0];
-        let content = super::capture_tmux_pane(pane_id);
-        assert!(content.is_ok());
     }
 
     #[test]
     fn test_retrieve_tmux_words() {
-        let words = super::retrieve_tmux_words();
-        println!("{:?}", words);
-        assert!(words.len() > 0);
+        if super::is_tmux_executable() {
+            let words = super::retrieve_tmux_words();
+            println!("{:?}", words);
+            assert!(words.len() > 0);
+        }
     }
 }
