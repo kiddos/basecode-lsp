@@ -133,7 +133,7 @@ impl LanguageServer for Backend {
 
             if let Some(root_folder) = self.lsp_args.root_folder.clone() {
                 let file_items = get_file_items(&current_line, &root_folder);
-                file_items_to_completion_items(file_items, &mut completions);
+                file_items_to_completion_items(file_items, &params, &mut completions);
             }
         }
         Ok(Some(CompletionResponse::Array(completions)))
@@ -235,16 +235,33 @@ fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Vec<Co
     completions.append(&mut items);
 }
 
-fn file_items_to_completion_items(file_items: Vec<String>, completions: &mut Vec<CompletionItem>) {
-    let mut items: Vec<CompletionItem> = file_items
-        .into_iter()
-        .map(|file_item| CompletionItem {
-            label: file_item.clone(),
+fn file_items_to_completion_items(file_items: Vec<(String, usize)>, params: &CompletionParams, completions: &mut Vec<CompletionItem>) {
+    let position = &params.text_document_position.position;
+    let line = position.line;
+    let mut items: Vec<CompletionItem> = Vec::new();
+    for file_item in file_items.iter() {
+        let text_edit = TextEdit {
+            new_text: file_item.0.clone(),
+            range: Range {
+                start: Position {
+                    line,
+                    character: file_item.1 as u32 + 1,
+                },
+                end: Position {
+                    line,
+                    character: (file_item.1 + file_item.0.len()) as u32,
+                }
+            }
+        };
+        let completion_item = CompletionItem {
+            label: file_item.0.clone(),
             kind: Some(CompletionItemKind::FILE),
+            text_edit: Some(CompletionTextEdit::Edit(text_edit)),
             ..CompletionItem::default()
-        })
-        .collect();
-    completions.append(&mut items);
+        };
+        items.push(completion_item);
+    }
+    completions.extend(items);
 }
 
 impl Backend {
