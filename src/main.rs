@@ -121,11 +121,15 @@ impl LanguageServer for Backend {
 
             let trie_lock = self.trie.lock().await;
             let words = trie_lock.suggest_completions(&prefix);
-            let suffixes = get_possible_current_word(&current_line, position.character as i32);
-            words_to_completion_items(words, &suffixes, &mut completions);
+            let mut all_words = words;
 
             let tmux_words = self.prepare_tmux_words().await;
-            words_to_completion_items(tmux_words, &suffixes, &mut completions);
+            all_words.extend(tmux_words);
+
+            let suffixes = get_possible_current_word(&current_line, position.character as i32);
+            all_words.sort();
+            all_words.dedup();
+            words_to_completion_items(all_words, &suffixes, &mut completions);
 
             let file_uri = params.text_document_position.text_document.uri.to_string();
             let snippets = self.suggest_snippets(&file_uri, &prefix).await;
@@ -189,7 +193,7 @@ fn get_word_prefix(current_line: &str, character: i32) -> String {
 fn get_possible_current_word(current_line: &str, character: i32) -> Vec<String> {
     let mut possible: Vec<String> = Vec::new();
     let line: Vec<char> = current_line.chars().collect();
-    let mut i = character.min(line.len() as i32 - 1);
+    let mut i = (character - 1).min(line.len() as i32 - 1);
     let mut current = Vec::new();
     while i >= 0 && valid_token_char(line[i as usize]) {
         i -= 1;
