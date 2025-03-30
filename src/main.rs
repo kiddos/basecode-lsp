@@ -213,7 +213,7 @@ fn words_to_completion_items(
     suffixes: &Vec<String>,
     completions: &mut Vec<CompletionItem>,
 ) {
-    let mut items: Vec<CompletionItem> = words
+    let items: Vec<CompletionItem> = words
         .iter()
         .filter(|&word| !suffixes.contains(word))
         .map(|word| CompletionItem {
@@ -223,11 +223,11 @@ fn words_to_completion_items(
             ..CompletionItem::default()
         })
         .collect();
-    completions.append(&mut items);
+    completions.extend(items);
 }
 
 fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Vec<CompletionItem>) {
-    let mut items: Vec<CompletionItem> = snippets
+    let items: Vec<CompletionItem> = snippets
         .into_iter()
         .map(|snippet| CompletionItem {
             label: snippet.name.clone(),
@@ -236,7 +236,7 @@ fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Vec<Co
             ..CompletionItem::default()
         })
         .collect();
-    completions.append(&mut items);
+    completions.extend(items);
 }
 
 fn file_items_to_completion_items(file_items: Vec<(String, usize)>, params: &CompletionParams, completions: &mut Vec<CompletionItem>) {
