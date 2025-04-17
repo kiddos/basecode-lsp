@@ -78,4 +78,21 @@ mod tests {
         let items = list_all_file_items(Path::new("doesnt_exist"));
         assert_eq!(0, items.len());
     }
+
+    #[test]
+    fn test_get_file_items() {
+        // Create a dummy directory structure for testing
+        fs::create_dir_all("./test_dir/subdir").unwrap();
+        fs::File::create("./test_dir/file1.txt").unwrap();
+        fs::File::create("./test_dir/subdir/file2.txt").unwrap();
+
+        let line = "test_dir/subdir/";
+        let root_folder = "./";
+        let items = get_file_items(line, root_folder);
+
+        assert!(items.contains(&("file2.txt".to_string(), 15)));
+
+        // Clean up the dummy directory structure
+        fs::remove_dir_all("./test_dir").unwrap();
+    }
 }
