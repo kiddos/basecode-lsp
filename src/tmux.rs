@@ -46,7 +46,7 @@ fn capture_tmux_pane(pane_id: &str) -> Result<String, ()> {
 }
 
 fn capture_alphanumeric_sequences(input: &str) -> Vec<String> {
-    let re = Regex::new(r"[a-zA-Z0-9][a-zA-Z0-9_\-\.]*").unwrap();
+    let re = Regex::new(r"[a-zA-Z0-9]+").unwrap();
 
     re.find_iter(input)
         .map(|mat| mat.as_str().to_string())
