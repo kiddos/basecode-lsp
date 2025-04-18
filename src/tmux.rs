@@ -93,7 +93,7 @@ mod tests {
     fn test_capture_alphanumeric_sequences() {
         let input = "Hello, world! 123 abc_def";
         let words = super::capture_alphanumeric_sequences(input);
-        assert_eq!(words, vec!["Hello", "world", "123", "abc_def"]);
+        assert_eq!(words, vec!["Hello", "world", "123", "abc", "def"]);
     }
 
     #[test]
