@@ -155,6 +155,11 @@ fn is_token(current: &Vec<char>, min_len: usize) -> bool {
     if current.iter().all(|c| c.is_digit(10)) {
         return false;
     }
+    if let Some(first_char) = current.iter().next() {
+        if first_char.is_digit(10) {
+            return false;
+        }
+    }
     true
 }
 
