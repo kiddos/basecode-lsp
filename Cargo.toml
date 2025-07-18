@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.28", features = ["derive"] }
 glob = "0.3.2"
+hashbrown = "0.15.4"
 home = "0.5.11"
 regex = "1.11.1"
 serde_json = "1.0.138"

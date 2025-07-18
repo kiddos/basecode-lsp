@@ -1,5 +1,5 @@
 use std::cmp::max;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 #[derive(Debug, Default)]
 pub struct TrieNode {
