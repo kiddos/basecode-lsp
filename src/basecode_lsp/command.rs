@@ -31,3 +31,20 @@ pub fn get_command_completions() -> Vec<String> {
     }
     commands
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_command_completion() {
+        let items = get_command_completions();
+        // for item in items.iter() {
+        //     println!("item = {}", item);
+        // }
+        assert!(items.iter().any(|s| s == "cp"));
+        assert!(items.iter().any(|s| s == "mv"));
+        assert!(items.iter().any(|s| s == "ls"));
+        assert_ne!(0, items.len());
+    }
+}
