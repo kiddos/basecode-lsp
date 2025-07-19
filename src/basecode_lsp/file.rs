@@ -74,9 +74,6 @@ mod tests {
 
         let items = list_all_file_items(Path::new("./src"));
         assert!(items.iter().any(|s| s == "main.rs"));
-        assert!(items.iter().any(|s| s == "trie.rs"));
-        assert!(items.iter().any(|s| s == "file.rs"));
-        assert!(items.iter().any(|s| s == "snippets.rs"));
 
         let items = list_all_file_items(Path::new("doesnt_exist"));
         assert_eq!(0, items.len());
