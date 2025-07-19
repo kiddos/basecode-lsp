@@ -1,3 +1,4 @@
+use super::file::FileItem;
 use super::snippet::Snippet;
 use tower_lsp::lsp_types::*;
 
@@ -102,7 +103,7 @@ pub fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Ve
 }
 
 pub fn file_items_to_completion_items(
-    file_items: Vec<(String, usize)>,
+    file_items: Vec<FileItem>,
     params: &CompletionParams,
     completions: &mut Vec<CompletionItem>,
 ) {
@@ -111,21 +112,25 @@ pub fn file_items_to_completion_items(
     let mut items: Vec<CompletionItem> = Vec::new();
     for file_item in file_items.iter() {
         let text_edit = TextEdit {
-            new_text: file_item.0.clone(),
+            new_text: file_item.filename.clone(),
             range: Range {
                 start: Position {
                     line,
-                    character: file_item.1 as u32 + 1,
+                    character: file_item.pos as u32 + 1,
                 },
                 end: Position {
                     line,
-                    character: (file_item.1 + file_item.0.len()) as u32,
+                    character: (file_item.pos + file_item.filename.len()) as u32,
                 },
             },
         };
         let completion_item = CompletionItem {
-            label: file_item.0.clone(),
-            kind: Some(CompletionItemKind::FILE),
+            label: file_item.filename.clone(),
+            kind: Some(if file_item.is_dir {
+                CompletionItemKind::FOLDER
+            } else {
+                CompletionItemKind::FILE
+            }),
             text_edit: Some(CompletionTextEdit::Edit(text_edit)),
             ..CompletionItem::default()
         };

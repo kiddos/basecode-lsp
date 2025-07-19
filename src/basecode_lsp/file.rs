@@ -2,8 +2,35 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::cmp::Ordering;
 
-pub fn list_all_file_items(path: &Path) -> Vec<String> {
+pub struct FileItem {
+    pub filename: String,
+    pub pos: usize,
+    pub is_dir: bool,
+}
+
+impl Ord for FileItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.filename.cmp(&other.filename)
+    }
+}
+
+impl PartialEq for FileItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.filename == other.filename && self.pos == other.pos
+    }
+}
+
+impl Eq for FileItem {}
+
+impl PartialOrd for FileItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub fn list_all_file_items(path: &Path, pos: usize) -> Vec<FileItem> {
     let read_result = fs::read_dir(path);
     let mut result = Vec::new();
     if let Ok(entries) = read_result {
@@ -12,7 +39,11 @@ pub fn list_all_file_items(path: &Path) -> Vec<String> {
                 let current = entry.path();
                 let filename = current.file_name().unwrap_or(OsStr::new("")).to_str();
                 if let Some(f) = filename {
-                    result.push(f.to_string());
+                    result.push(FileItem {
+                        filename: f.to_string(),
+                        pos,
+                        is_dir: current.is_dir(),
+                    });
                 }
             }
         }
@@ -22,7 +53,7 @@ pub fn list_all_file_items(path: &Path) -> Vec<String> {
 
 const MAX_LINE_LENGTH: usize = 600;
 
-pub fn get_file_items(current_line: &str, root_folder: &str) -> Vec<(String, usize)> {
+pub fn get_file_items(current_line: &str, root_folder: &str) -> Vec<FileItem> {
     if current_line.len() > MAX_LINE_LENGTH {
         return Vec::new();
     }
@@ -41,11 +72,7 @@ pub fn get_file_items(current_line: &str, root_folder: &str) -> Vec<(String, usi
 
             for base in [root_folder, ""].iter().map(PathBuf::from) {
                 let path = base.join(p);
-                file_items.extend(
-                    list_all_file_items(&path)
-                        .into_iter()
-                        .map(|file_path| (file_path, j)),
-                );
+                file_items.extend(list_all_file_items(&path, j));
             }
         }
     }
@@ -61,21 +88,21 @@ mod tests {
 
     #[test]
     fn test_list_all_files() {
-        let items = list_all_file_items(Path::new("./"));
+        let items = list_all_file_items(Path::new("./"), 0);
         for item in items.iter() {
-            println!("item = {}", item);
+            println!("item = {}", item.filename);
         }
-        assert!(items.iter().any(|s| s == "src"));
-        assert!(items.iter().any(|s| s == ".git"));
-        assert!(items.iter().any(|s| s == "README.md"));
-        assert!(items.iter().any(|s| s == ".gitignore"));
-        assert!(items.iter().any(|s| s == "Cargo.toml"));
-        assert!(items.iter().any(|s| s == "Cargo.lock"));
+        assert!(items.iter().any(|s| s.filename == "src"));
+        assert!(items.iter().any(|s| s.filename == ".git"));
+        assert!(items.iter().any(|s| s.filename == "README.md"));
+        assert!(items.iter().any(|s| s.filename == ".gitignore"));
+        assert!(items.iter().any(|s| s.filename == "Cargo.toml"));
+        assert!(items.iter().any(|s| s.filename == "Cargo.lock"));
 
-        let items = list_all_file_items(Path::new("./src"));
-        assert!(items.iter().any(|s| s == "main.rs"));
+        let items = list_all_file_items(Path::new("./src"), 0);
+        assert!(items.iter().any(|s| s.filename == "main.rs"));
 
-        let items = list_all_file_items(Path::new("doesnt_exist"));
+        let items = list_all_file_items(Path::new("doesnt_exist"), 0);
         assert_eq!(0, items.len());
     }
 
@@ -90,7 +117,11 @@ mod tests {
         let root_folder = "./";
         let items = get_file_items(line, root_folder);
 
-        assert!(items.contains(&("file2.txt".to_string(), 15)));
+        assert!(items.contains(&FileItem {
+            filename: "file2.txt".to_string(),
+            pos: 15,
+            is_dir: false,
+        }));
 
         // Clean up the dummy directory structure
         fs::remove_dir_all("./test_dir").unwrap();
