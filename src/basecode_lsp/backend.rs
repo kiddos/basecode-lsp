@@ -1,6 +1,7 @@
 use super::file::*;
 use super::snippet::*;
 use super::tmux::*;
+use super::command::*;
 use super::trie::*;
 use super::util::*;
 
@@ -23,6 +24,8 @@ pub struct LspArgs {
     min_word_len: usize,
     #[arg(long, default_value_t = true)]
     tmux_source: bool,
+    #[arg(long, default_value_t = false)]
+    command_source: bool,
     #[arg(long)]
     pub debug: bool,
 }
@@ -119,6 +122,11 @@ impl LanguageServer for Backend {
 
             let tmux_words = self.prepare_tmux_words().await;
             all_words.extend(tmux_words);
+
+            if self.lsp_args.command_source {
+                let command_words = get_command_completions();
+                all_words.extend(command_words);
+            }
 
             let suffixes = get_possible_current_word(&current_line, position.character as i32);
             all_words.sort();
