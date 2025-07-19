@@ -66,8 +66,9 @@ pub fn retrieve_tmux_words() -> Vec<String> {
         }
     }
 
-    result = result.into_iter()
-        .filter(|s| s.len() >= 3 && !s.chars().all(|c| c.is_numeric()))  // Filters out numbers and strings shorter than 3 characters
+    result = result
+        .into_iter()
+        .filter(|s| s.len() >= 3 && !s.chars().all(|c| c.is_numeric())) // Filters out numbers and strings shorter than 3 characters
         .collect();
     result.sort();
     result.dedup();

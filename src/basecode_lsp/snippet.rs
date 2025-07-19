@@ -1,6 +1,6 @@
 use glob::glob;
+use hashbrown::HashMap;
 use simple_log::error;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;

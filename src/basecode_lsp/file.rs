@@ -26,27 +26,30 @@ pub fn get_file_items(current_line: &str, root_folder: &str) -> Vec<(String, usi
     if current_line.len() > MAX_LINE_LENGTH {
         return Vec::new();
     }
-    
+
     let indices: Vec<usize> = current_line.char_indices().map(|(i, _)| i).collect();
     let mut file_items = Vec::new();
-    for (j, _) in current_line.char_indices().filter(|&(_, ch)| ch == '/' || ch == '\\') {
+    for (j, _) in current_line
+        .char_indices()
+        .filter(|&(_, ch)| ch == '/' || ch == '\\')
+    {
         for &i in indices.iter() {
             if i > j {
                 continue;
             }
-            let p = &current_line[i..j+1];
-            
+            let p = &current_line[i..j + 1];
+
             for base in [root_folder, ""].iter().map(PathBuf::from) {
                 let path = base.join(p);
                 file_items.extend(
                     list_all_file_items(&path)
                         .into_iter()
-                        .map(|file_path| (file_path, j))
+                        .map(|file_path| (file_path, j)),
                 );
             }
         }
     }
-    
+
     file_items.sort();
     file_items.dedup();
     file_items
