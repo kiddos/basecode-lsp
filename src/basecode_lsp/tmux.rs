@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_retrieve_tmux_words() {
         if super::is_tmux_executable() {
-            let words = super::retrieve_tmux_words();
+            let words = super::retrieve_tmux_words(3);
             println!("{:?}", words);
         }
     }
