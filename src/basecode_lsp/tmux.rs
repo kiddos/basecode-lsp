@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::process::Command;
+use super::util::*;
 
 fn is_tmux_executable() -> bool {
     let output = Command::new("tmux").arg("-V").output();
@@ -53,7 +54,7 @@ fn capture_alphanumeric_sequences(input: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn retrieve_tmux_words() -> Vec<String> {
+pub fn retrieve_tmux_words(min_len: usize) -> Vec<String> {
     if !is_tmux_executable() {
         return Vec::new();
     }
@@ -68,7 +69,7 @@ pub fn retrieve_tmux_words() -> Vec<String> {
 
     result = result
         .into_iter()
-        .filter(|s| s.len() >= 3 && !s.chars().all(|c| c.is_numeric())) // Filters out numbers and strings shorter than 3 characters
+        .filter(|s| is_token(&s.chars().collect(), min_len))
         .collect();
     result.sort();
     result.dedup();

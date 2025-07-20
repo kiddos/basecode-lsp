@@ -75,13 +75,14 @@ pub fn words_to_completion_items(
     words: Vec<String>,
     suffixes: &Vec<String>,
     completions: &mut Vec<CompletionItem>,
+    kind: CompletionItemKind,
 ) {
     let items: Vec<CompletionItem> = words
         .iter()
         .filter(|&word| !suffixes.contains(word))
         .map(|word| CompletionItem {
             label: word.clone(),
-            kind: Some(CompletionItemKind::TEXT),
+            kind: Some(kind),
             sort_text: Some(word.clone()),
             ..CompletionItem::default()
         })

@@ -118,20 +118,18 @@ impl LanguageServer for Backend {
 
             let trie_lock = self.trie.lock().await;
             let words = trie_lock.suggest_completions(&prefix);
-            let mut all_words = words;
+            let suffixes = get_possible_current_word(&current_line, position.character as i32);
+            words_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
 
             let tmux_words = self.prepare_tmux_words().await;
-            all_words.extend(tmux_words);
+            words_to_completion_items(tmux_words, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
 
             if self.lsp_args.command_source {
-                let command_words = get_command_completions();
-                all_words.extend(command_words);
+                let mut command_words = get_command_completions();
+                command_words.sort();
+                command_words.dedup();
+                words_to_completion_items(command_words, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
             }
-
-            let suffixes = get_possible_current_word(&current_line, position.character as i32);
-            all_words.sort();
-            all_words.dedup();
-            words_to_completion_items(all_words, &suffixes, &mut completions);
 
             let file_uri = params.text_document_position.text_document.uri.to_string();
             let snippets = self.suggest_snippets(&file_uri, &prefix).await;
@@ -209,7 +207,7 @@ impl Backend {
 
     async fn maybe_update_tmux(&self) {
         if self.lsp_args.tmux_source {
-            let tmux_content = retrieve_tmux_words();
+            let tmux_content = retrieve_tmux_words(self.lsp_args.min_word_len);
             let mut data = self.tmux_source.lock().await;
             data.clear();
             data.extend(tmux_content);
