@@ -115,29 +115,30 @@ impl LanguageServer for Backend {
         let mut completions = Vec::new();
         if let Some(current_line) = self.get_current_line(&params).await {
             let prefix = get_word_prefix(&current_line, position.character as i32);
+            if prefix.chars().next().map_or(false, |c| c.is_alphabetic()) {
+                let trie_lock = self.trie.lock().await;
+                let words = trie_lock.suggest_completions(&prefix);
+                let suffixes = get_possible_current_word(&current_line, position.character as i32);
+                words_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
 
-            let trie_lock = self.trie.lock().await;
-            let words = trie_lock.suggest_completions(&prefix);
-            let suffixes = get_possible_current_word(&current_line, position.character as i32);
-            words_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
+                let tmux_words = self.prepare_tmux_words().await;
+                words_to_completion_items(tmux_words, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
 
-            let tmux_words = self.prepare_tmux_words().await;
-            words_to_completion_items(tmux_words, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
+                if self.lsp_args.command_source {
+                    let mut command_words = get_command_completions();
+                    command_words.sort();
+                    command_words.dedup();
+                    words_to_completion_items(command_words, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
+                }
 
-            if self.lsp_args.command_source {
-                let mut command_words = get_command_completions();
-                command_words.sort();
-                command_words.dedup();
-                words_to_completion_items(command_words, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
-            }
+                let file_uri = params.text_document_position.text_document.uri.to_string();
+                let snippets = self.suggest_snippets(&file_uri, &prefix).await;
+                snippets_to_completion_items(snippets, &mut completions);
 
-            let file_uri = params.text_document_position.text_document.uri.to_string();
-            let snippets = self.suggest_snippets(&file_uri, &prefix).await;
-            snippets_to_completion_items(snippets, &mut completions);
-
-            if let Some(root_folder) = self.lsp_args.root_folder.clone() {
-                let file_items = get_file_items(&current_line, &root_folder);
-                file_items_to_completion_items(file_items, &params, &mut completions);
+                if let Some(root_folder) = self.lsp_args.root_folder.clone() {
+                    let file_items = get_file_items(&current_line, &root_folder);
+                    file_items_to_completion_items(file_items, &params, &mut completions);
+                }
             }
         }
         Ok(Some(CompletionResponse::Array(completions)))
