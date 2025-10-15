@@ -71,8 +71,29 @@ pub fn get_possible_current_word(current_line: &str, character: i32) -> Vec<Stri
     possible
 }
 
+pub fn words_uri_pair_to_completion_items(
+    words: Vec<(String, String)>,
+    suffixes: &Vec<String>,
+    completions: &mut Vec<CompletionItem>,
+    kind: CompletionItemKind,
+) {
+    let items: Vec<CompletionItem> = words
+        .iter()
+        .filter(|&item| !suffixes.contains(&item.0))
+        .map(|item| CompletionItem {
+            label: item.0.to_string(),
+            kind: Some(kind),
+            sort_text: Some(item.0.to_string()),
+            detail: Some(item.1.to_string()),
+            ..CompletionItem::default()
+        })
+        .collect();
+    completions.extend(items);
+}
+
 pub fn words_to_completion_items(
     words: Vec<String>,
+    source: String,
     suffixes: &Vec<String>,
     completions: &mut Vec<CompletionItem>,
     kind: CompletionItemKind,
@@ -84,6 +105,7 @@ pub fn words_to_completion_items(
             label: word.clone(),
             kind: Some(kind),
             sort_text: Some(word.clone()),
+            detail: Some(source.to_string()),
             ..CompletionItem::default()
         })
         .collect();

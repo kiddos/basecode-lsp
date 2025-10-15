@@ -5,6 +5,7 @@ use std::cmp::max;
 pub struct TrieNode {
     children: HashMap<char, TrieNode>,
     word_count: i32,
+    uri: String,
 }
 
 #[derive(Debug)]
@@ -19,12 +20,15 @@ impl Trie {
         }
     }
 
-    pub fn insert(&mut self, word: &str) {
+    pub fn insert(&mut self, word: &str, uri: &str) {
         let mut node = &mut self.root;
         for char in word.chars() {
             node = node.children.entry(char).or_default();
         }
         node.word_count += 1;
+        if node.uri.is_empty() {
+            node.uri = uri.to_string();
+        }
     }
 
     pub fn remove(&mut self, word: &str) {
@@ -49,7 +53,7 @@ impl Trie {
         false
     }
 
-    pub fn suggest_completions(&self, prefix: &str) -> Vec<String> {
+    pub fn suggest_completions(&self, prefix: &str) -> Vec<(String, String)> {
         let mut completions = Vec::new();
         let p: Vec<char> = prefix.chars().collect();
         self.suggest_completions_helper(&self.root, &p, 0, &mut completions);
@@ -61,7 +65,7 @@ impl Trie {
         node: &TrieNode,
         prefix: &Vec<char>,
         index: usize,
-        completions: &mut Vec<String>,
+        completions: &mut Vec<(String, String)>,
     ) {
         if index == prefix.len() {
             let mut current = prefix.clone();
@@ -74,9 +78,13 @@ impl Trie {
         }
     }
 
-    fn collect_words(node: &TrieNode, word: &mut Vec<char>, completions: &mut Vec<String>) {
-        if node.word_count > 0 {
-            completions.push(word.iter().collect());
+    fn collect_words(
+        node: &TrieNode,
+        word: &mut Vec<char>,
+        completions: &mut Vec<(String, String)>,
+    ) {
+        if node.word_count > 0 && !node.uri.is_empty() {
+            completions.push((word.iter().collect(), node.uri.to_string()));
         }
 
         for (&char, child) in node.children.iter() {
@@ -107,9 +115,9 @@ mod tests {
     fn test_insert_and_contains() {
         let mut trie = Trie::new();
 
-        trie.insert("apple");
-        trie.insert("application");
-        trie.insert("banana");
+        trie.insert("apple", "file://");
+        trie.insert("application", "file://");
+        trie.insert("banana", "file://");
 
         assert!(trie_contains(&trie, "apple"));
         assert!(trie_contains(&trie, "application"));
@@ -122,9 +130,9 @@ mod tests {
     fn test_remove() {
         let mut trie = Trie::new();
 
-        trie.insert("apple");
-        trie.insert("application");
-        trie.insert("banana");
+        trie.insert("apple", "file://");
+        trie.insert("application", "file://");
+        trie.insert("banana", "file://");
 
         assert!(trie_contains(&trie, "apple"));
         trie.remove("apple");
@@ -138,33 +146,52 @@ mod tests {
     fn test_suggest_completions() {
         let mut trie = Trie::new();
 
-        trie.insert("apple");
-        trie.insert("application");
-        trie.insert("banana");
-        trie.insert("bat");
-        trie.insert("bear");
+        trie.insert("apple", "file://");
+        trie.insert("application", "file://");
+        trie.insert("banana", "file://");
+        trie.insert("bat", "file://");
+        trie.insert("bear", "file://");
 
         let mut completions = trie.suggest_completions("ap");
         completions.sort();
-        assert_eq!(completions, vec!["apple", "application"]);
+        assert_eq!(
+            completions,
+            vec![
+                ("apple".to_string(), "file://".to_string()),
+                ("application".to_string(), "file://".to_string())
+            ]
+        );
 
         let mut completions = trie.suggest_completions("ba");
         completions.sort();
-        assert_eq!(completions, vec!["banana", "bat"]);
+        assert_eq!(
+            completions,
+            vec![
+                ("banana".to_string(), "file://".to_string()),
+                ("bat".to_string(), "file://".to_string())
+            ]
+        );
 
         let mut completions = trie.suggest_completions("b");
         completions.sort();
-        assert_eq!(completions, vec!["banana", "bat", "bear"]);
+        assert_eq!(
+            completions,
+            vec![
+                ("banana".to_string(), "file://".to_string()),
+                ("bat".to_string(), "file://".to_string()),
+                ("bear".to_string(), "file://".to_string())
+            ]
+        );
 
         let completions = trie.suggest_completions("nonexistent");
-        assert_eq!(completions, Vec::<String>::new());
+        assert_eq!(completions, Vec::<(String, String)>::new());
     }
 
     #[test]
     fn test_remove_nonexistent() {
         let mut trie = Trie::new();
 
-        trie.insert("apple");
+        trie.insert("apple", "file://");
         trie.remove("nonexistent");
         assert!(trie_contains(&trie, "apple"));
     }
@@ -173,8 +200,8 @@ mod tests {
     fn test_remove_multiple() {
         let mut trie = Trie::new();
 
-        trie.insert("apple");
-        trie.insert("apple");
+        trie.insert("apple", "file://");
+        trie.insert("apple", "file://");
         assert!(trie_contains(&trie, "apple"));
 
         trie.remove("apple");

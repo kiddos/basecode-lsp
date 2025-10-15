@@ -77,7 +77,7 @@ impl LanguageServer for Backend {
             params.text_document.text.clone(),
         );
 
-        self.add_words(params.text_document.text.clone()).await;
+        self.add_words(params.text_document.text.clone(), params.text_document.uri.to_string()).await;
         self.maybe_update_tmux().await;
     }
 
@@ -103,7 +103,7 @@ impl LanguageServer for Backend {
             }
         }
         for content_change in params.content_changes.iter() {
-            self.add_words(content_change.text.clone()).await;
+            self.add_words(content_change.text.clone(), params.text_document.uri.to_string()).await;
         }
         self.maybe_update_tmux().await;
     }
@@ -119,16 +119,18 @@ impl LanguageServer for Backend {
                 let trie_lock = self.trie.lock().await;
                 let words = trie_lock.suggest_completions(&prefix);
                 let suffixes = get_possible_current_word(&current_line, position.character as i32);
-                words_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
+                words_uri_pair_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
 
                 let tmux_words = self.prepare_tmux_words().await;
-                words_to_completion_items(tmux_words, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
+                let source = "tmux".to_string();
+                words_to_completion_items(tmux_words, source, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
 
                 if self.lsp_args.command_source {
                     let mut command_words = get_command_completions();
                     command_words.sort();
                     command_words.dedup();
-                    words_to_completion_items(command_words, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
+                    let source = "command".to_string();
+                    words_to_completion_items(command_words, source, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
                 }
 
                 let file_uri = params.text_document_position.text_document.uri.to_string();
@@ -156,12 +158,12 @@ impl Backend {
         };
     }
 
-    async fn add_words(&self, content: String) {
+    async fn add_words(&self, content: String, uri: String) {
         let mut trie_lock = self.trie.lock().await;
         for token in content.split_whitespace() {
             let words = process_token(token, self.lsp_args.min_word_len);
             for w in words {
-                trie_lock.insert(&w);
+                trie_lock.insert(&w, &uri);
             }
         }
     }
