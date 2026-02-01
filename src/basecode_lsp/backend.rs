@@ -32,6 +32,7 @@ pub struct LspArgs {
 
 #[derive(Debug)]
 pub struct Backend {
+    client: Client,
     documents: Mutex<HashMap<String, String>>,
     snippets: Mutex<HashMap<String, Vec<Snippet>>>,
     trie: Mutex<Trie>,
@@ -43,7 +44,9 @@ pub struct Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         if let Some(snippet_folder) = self.lsp_args.snippet_folder.clone() {
-            info!("loading snippet folder: {}", snippet_folder);
+            let message = format!("loading snippet folder: {}", snippet_folder);
+            info!("{}", message);
+            self.client.log_message(MessageType::INFO, message).await;
             let mut snippets_lock = self.snippets.lock().await;
             prepare_snippet(snippet_folder, &mut snippets_lock);
         }
@@ -148,8 +151,9 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
-    pub fn new(lsp_args: LspArgs) -> Self {
+    pub fn new(lsp_args: LspArgs, client: Client) -> Self {
         return Self {
+            client,
             documents: Mutex::new(HashMap::new()),
             snippets: Mutex::new(HashMap::new()),
             trie: Mutex::new(Trie::new()),
@@ -158,7 +162,18 @@ impl Backend {
         };
     }
 
+    fn is_good_size(&self, content: &str) -> bool {
+        const MAX_CONTENT_SIZE: usize = 8 * 1024 * 1024;
+        content.len() < MAX_CONTENT_SIZE
+    }
+
     async fn add_words(&self, content: String, uri: String) {
+        if !self.is_good_size(&content) {
+            let message = format!("{} is too large, skip adding words", uri);
+            self.client.log_message(MessageType::INFO, message).await;
+            return;
+        }
+
         let mut trie_lock = self.trie.lock().await;
         for token in content.split_whitespace() {
             let words = process_token(token, self.lsp_args.min_word_len);
@@ -169,6 +184,10 @@ impl Backend {
     }
 
     async fn remove_words(&self, content: String) {
+        if !self.is_good_size(&content) {
+            return;
+        }
+
         let mut trie_lock = self.trie.lock().await;
         for token in content.split_whitespace() {
             let words = process_token(token, self.lsp_args.min_word_len);
