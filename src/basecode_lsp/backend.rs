@@ -12,6 +12,9 @@ use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::*;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -33,11 +36,13 @@ pub struct LspArgs {
 #[derive(Debug)]
 pub struct Backend {
     client: Client,
-    documents: Mutex<HashMap<String, String>>,
-    snippets: Mutex<HashMap<String, Vec<Snippet>>>,
-    trie: Mutex<Trie>,
-    tmux_source: Mutex<Vec<String>>,
-    lsp_args: LspArgs,
+    documents: Arc<Mutex<HashMap<String, String>>>,
+    snippets: Arc<Mutex<HashMap<String, Vec<Snippet>>>>,
+    trie: Arc<Mutex<Trie>>,
+    tmux_source: Arc<Mutex<Vec<String>>>,
+    indexed_content: Arc<Mutex<HashMap<String, String>>>,
+    debounce_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    lsp_args: Arc<LspArgs>,
 }
 
 #[tower_lsp::async_trait]
@@ -74,41 +79,96 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let mut document_lock = self.documents.lock().await;
-        document_lock.insert(
-            params.text_document.uri.to_string(),
-            params.text_document.text.clone(),
-        );
+        let uri = params.text_document.uri.to_string();
+        let text = params.text_document.text.clone();
 
-        self.add_words(params.text_document.text.clone(), params.text_document.uri.to_string()).await;
+        let mut document_lock = self.documents.lock().await;
+        document_lock.insert(uri.clone(), text.clone());
+
+        let mut indexed_lock = self.indexed_content.lock().await;
+        indexed_lock.insert(uri.clone(), text.clone());
+
+        self.add_words(text, uri).await;
         self.maybe_update_tmux().await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let mut document_lock = self.documents.lock().await;
-
         let uri = params.text_document.uri.to_string();
-        if let Some(content) = document_lock.get(&uri) {
-            self.remove_words(content.clone()).await;
+
+        let mut tasks_lock = self.debounce_tasks.lock().await;
+        if let Some(task) = tasks_lock.remove(&uri) {
+            task.abort();
+        }
+
+        let mut document_lock = self.documents.lock().await;
+        let mut indexed_lock = self.indexed_content.lock().await;
+
+        if let Some(content) = indexed_lock.remove(&uri) {
+            self.remove_words(content).await;
         }
         document_lock.remove(&uri);
         self.maybe_update_tmux().await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let mut document_lock = self.documents.lock().await;
-
         let uri = params.text_document.uri.to_string();
+
+        let mut document_lock = self.documents.lock().await;
         if let Some(content) = document_lock.get_mut(&uri) {
-            self.remove_words(content.clone()).await;
             if let Some(last_change) = params.content_changes.last() {
                 *content = last_change.text.clone();
             }
+        } else {
+            if let Some(last_change) = params.content_changes.last() {
+                document_lock.insert(uri.clone(), last_change.text.clone());
+            }
         }
-        for content_change in params.content_changes.iter() {
-            self.add_words(content_change.text.clone(), params.text_document.uri.to_string()).await;
+        drop(document_lock);
+
+        let mut tasks_lock = self.debounce_tasks.lock().await;
+        if let Some(task) = tasks_lock.remove(&uri) {
+            task.abort();
         }
-        self.maybe_update_tmux().await;
+
+        let documents = Arc::clone(&self.documents);
+        let indexed_content = Arc::clone(&self.indexed_content);
+        let trie = Arc::clone(&self.trie);
+        let tmux_source = Arc::clone(&self.tmux_source);
+        let lsp_args = Arc::clone(&self.lsp_args);
+        let client = self.client.clone();
+        let uri_clone = uri.clone();
+
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let new_content = {
+                let doc_lock = documents.lock().await;
+                doc_lock.get(&uri_clone).cloned()
+            };
+
+            if let Some(new_content) = new_content {
+                let mut indexed_lock = indexed_content.lock().await;
+                let old_content = indexed_lock.get(&uri_clone).cloned();
+
+                if let Some(old) = old_content {
+                    remove_words_internal(Arc::clone(&trie), Arc::clone(&lsp_args), old).await;
+                }
+
+                add_words_internal(
+                    Arc::clone(&trie),
+                    client,
+                    Arc::clone(&lsp_args),
+                    new_content.clone(),
+                    uri_clone.clone(),
+                )
+                .await;
+
+                indexed_lock.insert(uri_clone, new_content);
+                maybe_update_tmux_internal(lsp_args, tmux_source).await;
+            }
+        });
+
+        tasks_lock.insert(uri, task);
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -154,47 +214,29 @@ impl Backend {
     pub fn new(lsp_args: LspArgs, client: Client) -> Self {
         return Self {
             client,
-            documents: Mutex::new(HashMap::new()),
-            snippets: Mutex::new(HashMap::new()),
-            trie: Mutex::new(Trie::new()),
-            tmux_source: Mutex::new(Vec::new()),
-            lsp_args,
+            documents: Arc::new(Mutex::new(HashMap::new())),
+            snippets: Arc::new(Mutex::new(HashMap::new())),
+            trie: Arc::new(Mutex::new(Trie::new())),
+            tmux_source: Arc::new(Mutex::new(Vec::new())),
+            indexed_content: Arc::new(Mutex::new(HashMap::new())),
+            debounce_tasks: Arc::new(Mutex::new(HashMap::new())),
+            lsp_args: Arc::new(lsp_args),
         };
     }
 
-    fn is_good_size(&self, content: &str) -> bool {
-        const MAX_CONTENT_SIZE: usize = 8 * 1024 * 1024;
-        content.len() < MAX_CONTENT_SIZE
-    }
-
     async fn add_words(&self, content: String, uri: String) {
-        if !self.is_good_size(&content) {
-            let message = format!("{} is too large, skip adding words", uri);
-            self.client.log_message(MessageType::INFO, message).await;
-            return;
-        }
-
-        let mut trie_lock = self.trie.lock().await;
-        for token in content.split_whitespace() {
-            let words = process_token(token, self.lsp_args.min_word_len);
-            for w in words {
-                trie_lock.insert(&w, &uri);
-            }
-        }
+        add_words_internal(
+            Arc::clone(&self.trie),
+            self.client.clone(),
+            Arc::clone(&self.lsp_args),
+            content,
+            uri,
+        )
+        .await;
     }
 
     async fn remove_words(&self, content: String) {
-        if !self.is_good_size(&content) {
-            return;
-        }
-
-        let mut trie_lock = self.trie.lock().await;
-        for token in content.split_whitespace() {
-            let words = process_token(token, self.lsp_args.min_word_len);
-            for w in words {
-                trie_lock.remove(&w);
-            }
-        }
+        remove_words_internal(Arc::clone(&self.trie), Arc::clone(&self.lsp_args), content).await;
     }
 
     async fn get_current_line(&self, params: &CompletionParams) -> Option<String> {
@@ -210,6 +252,62 @@ impl Backend {
         }
         None
     }
+}
+
+fn is_good_size(content: &str) -> bool {
+    const MAX_CONTENT_SIZE: usize = 8 * 1024 * 1024;
+    content.len() < MAX_CONTENT_SIZE
+}
+
+async fn add_words_internal(
+    trie: Arc<Mutex<Trie>>,
+    client: Client,
+    lsp_args: Arc<LspArgs>,
+    content: String,
+    uri: String,
+) {
+    if !is_good_size(&content) {
+        let message = format!("{} is too large, skip adding words", uri);
+        client.log_message(MessageType::INFO, message).await;
+        return;
+    }
+
+    let mut trie_lock = trie.lock().await;
+    for token in content.split_whitespace() {
+        let words = process_token(token, lsp_args.min_word_len);
+        for w in words {
+            trie_lock.insert(&w, &uri);
+        }
+    }
+}
+
+async fn remove_words_internal(trie: Arc<Mutex<Trie>>, lsp_args: Arc<LspArgs>, content: String) {
+    if !is_good_size(&content) {
+        return;
+    }
+
+    let mut trie_lock = trie.lock().await;
+    for token in content.split_whitespace() {
+        let words = process_token(token, lsp_args.min_word_len);
+        for w in words {
+            trie_lock.remove(&w);
+        }
+    }
+}
+
+async fn maybe_update_tmux_internal(
+    lsp_args: Arc<LspArgs>,
+    tmux_source: Arc<Mutex<Vec<String>>>,
+) {
+    if lsp_args.tmux_source {
+        let tmux_content = retrieve_tmux_words(lsp_args.min_word_len);
+        let mut data = tmux_source.lock().await;
+        data.clear();
+        data.extend(tmux_content);
+    }
+}
+
+impl Backend {
 
     async fn suggest_snippets(&self, file_uri: &str, prefix: &str) -> Vec<Snippet> {
         let snippet_lock = self.snippets.lock().await;
