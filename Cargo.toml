@@ -2,6 +2,8 @@
 name = "basecode-lsp"
 version = "0.1.10"
 edition = "2021"
+description = "A Language Server Protocol (LSP) implementation for buffer, path, tmux, snippets completion."
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
