@@ -209,4 +209,20 @@ mod tests {
         trie.remove("apple");
         assert!(!trie_contains(&trie, "apple"));
     }
+
+    #[test]
+    fn benchmark_insert_50000_words() {
+        let mut trie = Trie::new();
+        let words: Vec<String> = (0..50000).map(|i| format!("word_{i}")).collect();
+
+        let start = std::time::Instant::now();
+        for word in &words {
+            trie.insert(word, "file://test.txt");
+        }
+        let duration = start.elapsed();
+
+        println!("Inserted 50,000 words into trie in {:?}", duration);
+        assert!(trie_contains(&trie, "word_0"));
+        assert!(trie_contains(&trie, "word_49999"));
+    }
 }
