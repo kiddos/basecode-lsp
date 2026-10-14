@@ -29,7 +29,6 @@ cargo install --git https://github.com/kiddos/basecode-lsp.git
 
 | Argument | Description | Default |
 | :--- | :--- | :--- |
-| `--snippet-folder` | Path to the directory containing `.snippets` files | None |
 | `--root-folder`    | Root path for relative file path completion | None |
 | `--min-word-len`   | Minimum length for words to be indexed | `2` |
 | `--tmux-source`    | Enable/disable pulling words from tmux panes | `true` |
@@ -38,7 +37,7 @@ cargo install --git https://github.com/kiddos/basecode-lsp.git
 
 ### Snippet Format
 
-Create `.snippets` files (e.g., `rust.snippets`) in your snippet folder:
+Create `.snippets` files (e.g., `rust.snippets`) in your snippet folders:
 
 ```snippets
 snippet main
@@ -47,21 +46,29 @@ snippet main
 	}
 ```
 
+Snippet folders are supplied dynamically to `basecode-lsp` using the custom JSON-RPC notification `basecode/setSnippetFolders`, which supports passing multiple snippet folder paths.
+
 ## 🔌 Editor Integration
 
 ### Neovim
 
-Using `nvim-lspconfig`:
+You can pass snippet folder paths to `basecode-lsp` via the custom `basecode/setSnippetFolders` JSON-RPC method in `on_attach` using `nvim-lspconfig`:
 
 ```lua
 local configs = require('lspconfig.configs')
 if not configs.basecode_lsp then
   configs.basecode_lsp = {
     default_config = {
-      cmd = { 'basecode-lsp', '--snippet-folder', '/path/to/snippets' },
+      cmd = { 'basecode-lsp' },
       filetypes = { 'rust', 'c', 'cpp', 'javascript', 'python', 'sh' },
       root_dir = require('lspconfig.util').root_pattern('.git', 'Cargo.toml'),
       settings = {},
+      on_attach = function(client, bufnr)
+        client.notify('basecode/setSnippetFolders', {
+          '/path/to/snippets1',
+          '/path/to/snippets2',
+        })
+      end,
     },
   }
 end

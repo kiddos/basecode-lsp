@@ -131,6 +131,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "home",
  "regex",
+ "serde",
  "serde_json",
  "simple-log",
  "tokio",

@@ -119,7 +119,7 @@ fn get_file_basename(path: String) -> String {
     }
 }
 
-pub fn prepare_snippet(snippet_path: String, snippets: &mut HashMap<String, Vec<Snippet>>) {
+pub fn prepare_snippet(snippet_path: &str, snippets: &mut HashMap<String, Vec<Snippet>>) {
     let target = format!("{}/*.snippets", snippet_path);
     if let Ok(paths) = glob(&target) {
         for entry in paths {
@@ -128,13 +128,20 @@ pub fn prepare_snippet(snippet_path: String, snippets: &mut HashMap<String, Vec<
                     let p = path.as_path();
                     let filename = get_file_basename(p.display().to_string());
                     let all_snippets = read_snippet(&p, &filename);
-                    snippets.insert(filename, all_snippets);
+                    snippets.entry(filename).or_default().extend(all_snippets);
                 }
                 Err(e) => {
                     error!("{:?}", e);
                 }
             }
         }
+    }
+}
+
+pub fn prepare_snippets<S: AsRef<str>>(snippet_paths: &[S], snippets: &mut HashMap<String, Vec<Snippet>>) {
+    snippets.clear();
+    for path in snippet_paths {
+        prepare_snippet(path.as_ref(), snippets);
     }
 }
 
@@ -243,5 +250,31 @@ mod test {
         assert!(patterns.contains_key("c"));
         assert!(patterns.contains_key("cpp"));
         assert!(patterns.get("rust").unwrap().contains(&".rs"));
+    }
+
+    #[test]
+    fn test_prepare_snippets_multiple_folders() {
+        let dir1 = std::env::temp_dir().join("test_snippets_1");
+        let dir2 = std::env::temp_dir().join("test_snippets_2");
+        let _ = fs::create_dir_all(&dir1);
+        let _ = fs::create_dir_all(&dir2);
+
+        let snippet1 = "snippet fn\n\tfn foo() {}";
+        let snippet2 = "snippet struct\n\tstruct Bar {}";
+
+        let _ = fs::write(dir1.join("rust.snippets"), snippet1);
+        let _ = fs::write(dir2.join("rust.snippets"), snippet2);
+
+        let mut snippets = HashMap::new();
+        let paths = vec![dir1.to_str().unwrap(), dir2.to_str().unwrap()];
+        prepare_snippets(&paths, &mut snippets);
+
+        let rust_snippets = snippets.get("rust").expect("should contain rust snippets");
+        assert_eq!(rust_snippets.len(), 2);
+        assert!(rust_snippets.iter().any(|s| s.name == "fn"));
+        assert!(rust_snippets.iter().any(|s| s.name == "struct"));
+
+        let _ = fs::remove_dir_all(dir1);
+        let _ = fs::remove_dir_all(dir2);
     }
 }

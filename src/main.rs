@@ -30,6 +30,9 @@ async fn main() {
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(|client| Backend::new(args, client));
+    let (service, socket) = LspService::build(|client| Backend::new(args, client))
+        .custom_method("basecode/setSnippetFolders", Backend::set_snippet_folders)
+        .custom_method("setSnippetFolders", Backend::set_snippet_folders)
+        .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
 }

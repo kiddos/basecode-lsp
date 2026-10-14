@@ -7,6 +7,7 @@ use super::util::*;
 
 use clap::Parser;
 use hashbrown::HashMap;
+use serde::{Deserialize, Serialize};
 use simple_log::*;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
@@ -16,11 +17,46 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use std::time::Duration;
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StringOrVec {
+    Single(String),
+    Vec(Vec<String>),
+}
+
+impl StringOrVec {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            StringOrVec::Single(s) => vec![s],
+            StringOrVec::Vec(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SnippetFoldersParams {
+    SingleFolder(String),
+    VecFolders(Vec<String>),
+    FolderObject {
+        #[serde(alias = "folders", alias = "snippet_folders", alias = "snippet_folder", alias = "folder_path", alias = "folder")]
+        folder_paths: StringOrVec,
+    },
+}
+
+impl SnippetFoldersParams {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            SnippetFoldersParams::SingleFolder(s) => vec![s],
+            SnippetFoldersParams::VecFolders(v) => v,
+            SnippetFoldersParams::FolderObject { folder_paths } => folder_paths.into_vec(),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct LspArgs {
-    #[arg(long)]
-    snippet_folder: Option<String>,
     #[arg(long)]
     root_folder: Option<String>,
     #[arg(long, default_value_t = 2)]
@@ -48,14 +84,6 @@ pub struct Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
-        if let Some(snippet_folder) = self.lsp_args.snippet_folder.clone() {
-            let message = format!("loading snippet folder: {}", snippet_folder);
-            info!("{}", message);
-            self.client.log_message(MessageType::INFO, message).await;
-            let mut snippets_lock = self.snippets.lock().await;
-            prepare_snippet(snippet_folder, &mut snippets_lock);
-        }
-
         let trigger_characters = Some(vec!["/".to_string(), "\"".to_string(), "'".to_string()]);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -224,6 +252,15 @@ impl Backend {
         };
     }
 
+    pub async fn set_snippet_folders(&self, params: SnippetFoldersParams) {
+        let folders = params.into_vec();
+        let message = format!("loading snippet folders: {:?}", folders);
+        info!("{}", message);
+        self.client.log_message(MessageType::INFO, message).await;
+        let mut snippets_lock = self.snippets.lock().await;
+        prepare_snippets(&folders, &mut snippets_lock);
+    }
+
     async fn add_words(&self, content: String, uri: String) {
         add_words_internal(
             Arc::clone(&self.trie),
@@ -341,5 +378,39 @@ impl Backend {
             output.push(word.clone());
         }
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_snippet_folders_params_deserialization() {
+        // Test single folder string
+        let val = json!("/path/to/snippets");
+        let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
+        assert_eq!(params.into_vec(), vec!["/path/to/snippets"]);
+
+        // Test array of strings
+        let val = json!(["/path/1", "/path/2"]);
+        let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
+        assert_eq!(params.into_vec(), vec!["/path/1", "/path/2"]);
+
+        // Test object with folder_paths
+        let val = json!({"folder_paths": ["/path/1", "/path/2"]});
+        let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
+        assert_eq!(params.into_vec(), vec!["/path/1", "/path/2"]);
+
+        // Test object with folders / snippet_folders
+        let val = json!({"folders": ["/path/a", "/path/b"]});
+        let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
+        assert_eq!(params.into_vec(), vec!["/path/a", "/path/b"]);
+
+        // Test object with single folder_path / snippet_folder
+        let val = json!({"folder_path": "/path/single"});
+        let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
+        assert_eq!(params.into_vec(), vec!["/path/single"]);
     }
 }
