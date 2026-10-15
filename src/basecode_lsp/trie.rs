@@ -53,7 +53,7 @@ impl Trie {
         false
     }
 
-    pub fn suggest_completions(&self, prefix: &str) -> Vec<(String, String)> {
+    pub fn suggest_completions(&self, prefix: &str) -> Vec<(String, String, i32)> {
         let mut completions = Vec::new();
         let p: Vec<char> = prefix.chars().collect();
         self.suggest_completions_helper(&self.root, &p, 0, &mut completions);
@@ -65,7 +65,7 @@ impl Trie {
         node: &TrieNode,
         prefix: &Vec<char>,
         index: usize,
-        completions: &mut Vec<(String, String)>,
+        completions: &mut Vec<(String, String, i32)>,
     ) {
         if index == prefix.len() {
             let mut current = prefix.clone();
@@ -81,10 +81,10 @@ impl Trie {
     fn collect_words(
         node: &TrieNode,
         word: &mut Vec<char>,
-        completions: &mut Vec<(String, String)>,
+        completions: &mut Vec<(String, String, i32)>,
     ) {
         if node.word_count > 0 && !node.uri.is_empty() {
-            completions.push((word.iter().collect(), node.uri.to_string()));
+            completions.push((word.iter().collect(), node.uri.to_string(), node.word_count));
         }
 
         for (&char, child) in node.children.iter() {
@@ -157,8 +157,8 @@ mod tests {
         assert_eq!(
             completions,
             vec![
-                ("apple".to_string(), "file://".to_string()),
-                ("application".to_string(), "file://".to_string())
+                ("apple".to_string(), "file://".to_string(), 1),
+                ("application".to_string(), "file://".to_string(), 1)
             ]
         );
 
@@ -167,8 +167,8 @@ mod tests {
         assert_eq!(
             completions,
             vec![
-                ("banana".to_string(), "file://".to_string()),
-                ("bat".to_string(), "file://".to_string())
+                ("banana".to_string(), "file://".to_string(), 1),
+                ("bat".to_string(), "file://".to_string(), 1)
             ]
         );
 
@@ -177,14 +177,14 @@ mod tests {
         assert_eq!(
             completions,
             vec![
-                ("banana".to_string(), "file://".to_string()),
-                ("bat".to_string(), "file://".to_string()),
-                ("bear".to_string(), "file://".to_string())
+                ("banana".to_string(), "file://".to_string(), 1),
+                ("bat".to_string(), "file://".to_string(), 1),
+                ("bear".to_string(), "file://".to_string(), 1)
             ]
         );
 
         let completions = trie.suggest_completions("nonexistent");
-        assert_eq!(completions, Vec::<(String, String)>::new());
+        assert_eq!(completions, Vec::<(String, String, i32)>::new());
     }
 
     #[test]

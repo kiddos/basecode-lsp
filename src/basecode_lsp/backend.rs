@@ -202,36 +202,127 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let text_document_position = params.text_document_position.clone();
         let position = text_document_position.position;
+        let file_uri = text_document_position.text_document.uri.to_string();
 
         let mut completions = Vec::new();
         if let Some(current_line) = self.get_current_line(&params).await {
             let prefix = get_word_prefix(&current_line, position.character as i32);
             if prefix.chars().next().map_or(false, |c| c.is_alphabetic()) {
-                let trie_lock = self.trie.lock().await;
-                let words = trie_lock.suggest_completions(&prefix);
                 let suffixes = get_possible_current_word(&current_line, position.character as i32);
-                words_uri_pair_to_completion_items(words, &suffixes, &mut completions, CompletionItemKind::TEXT);
 
-                let tmux_words = self.prepare_tmux_words().await;
-                let source = "tmux".to_string();
-                words_to_completion_items(tmux_words, source, &suffixes, &mut completions, CompletionItemKind::REFERENCE);
+                let doc_content = {
+                    let doc_lock = self.documents.lock().await;
+                    doc_lock.get(&file_uri).cloned().unwrap_or_default()
+                };
 
-                if self.lsp_args.command_source {
-                    let mut command_words = get_command_completions();
-                    command_words.sort();
-                    command_words.dedup();
-                    let source = "command".to_string();
-                    words_to_completion_items(command_words, source, &suffixes, &mut completions, CompletionItemKind::KEYWORD);
+                let doc_scores = calculate_document_word_scores(
+                    &doc_content,
+                    position.line as usize,
+                    self.lsp_args.min_word_len,
+                );
+
+                struct Candidate {
+                    kind: CompletionItemKind,
+                    detail: String,
+                    trie_count: i32,
+                    in_tmux: bool,
+                    in_command: bool,
                 }
 
-                let file_uri = params.text_document_position.text_document.uri.to_string();
+                let mut candidates: HashMap<String, Candidate> = HashMap::new();
+
+                let trie_lock = self.trie.lock().await;
+                let words = trie_lock.suggest_completions(&prefix);
+                for (word, uri, count) in words {
+                    candidates.insert(
+                        word,
+                        Candidate {
+                            kind: CompletionItemKind::TEXT,
+                            detail: uri,
+                            trie_count: count,
+                            in_tmux: false,
+                            in_command: false,
+                        },
+                    );
+                }
+                drop(trie_lock);
+
+                let tmux_words = self.prepare_tmux_words().await;
+                for word in tmux_words {
+                    if word.starts_with(&prefix) {
+                        candidates
+                            .entry(word)
+                            .and_modify(|c| c.in_tmux = true)
+                            .or_insert(Candidate {
+                                kind: CompletionItemKind::REFERENCE,
+                                detail: "tmux".to_string(),
+                                trie_count: 0,
+                                in_tmux: true,
+                                in_command: false,
+                            });
+                    }
+                }
+
+                if self.lsp_args.command_source {
+                    let command_words = get_command_completions();
+                    for word in command_words {
+                        if word.starts_with(&prefix) {
+                            candidates
+                                .entry(word)
+                                .and_modify(|c| c.in_command = true)
+                                .or_insert(Candidate {
+                                    kind: CompletionItemKind::KEYWORD,
+                                    detail: "command".to_string(),
+                                    trie_count: 0,
+                                    in_tmux: false,
+                                    in_command: false,
+                                });
+                        }
+                    }
+                }
+
+                for (word, cand) in candidates {
+                    if suffixes.contains(&word) {
+                        continue;
+                    }
+                    let doc_score = doc_scores.get(&word).cloned().unwrap_or(0.0);
+                    let tmux_bonus = if cand.in_tmux { 0.5 } else { 0.0 };
+                    let command_bonus = if cand.in_command { 0.1 } else { 0.0 };
+                    let score = doc_score * 10.0 + (cand.trie_count as f64) * 1.0 + tmux_bonus + command_bonus;
+
+                    completions.push(CompletionItem {
+                        label: word.clone(),
+                        kind: Some(cand.kind),
+                        sort_text: Some(format_sort_text(score, &word)),
+                        detail: Some(cand.detail),
+                        ..CompletionItem::default()
+                    });
+                }
+
                 let snippets = self.suggest_snippets(&file_uri, &prefix).await;
-                snippets_to_completion_items(snippets, &mut completions);
+                for snippet in snippets {
+                    let snippet_score = 100.0;
+                    completions.push(CompletionItem {
+                        label: snippet.name.clone(),
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        sort_text: Some(format_sort_text(snippet_score, &snippet.name)),
+                        documentation: Some(Documentation::String(snippet.markdown())),
+                        ..CompletionItem::default()
+                    });
+                }
 
                 if let Some(root_folder) = self.lsp_args.root_folder.clone() {
                     let file_items = get_file_items(&current_line, &root_folder);
-                    file_items_to_completion_items(file_items, &params, &mut completions);
+                    let mut file_completions = Vec::new();
+                    file_items_to_completion_items(file_items, &params, &mut file_completions);
+                    for mut item in file_completions {
+                        let file_score = 50.0;
+                        item.sort_text = Some(format_sort_text(file_score, &item.label));
+                        completions.push(item);
+                    }
                 }
+
+                completions.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             }
         }
         Ok(Some(CompletionResponse::Array(completions)))
@@ -385,6 +476,56 @@ impl Backend {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn test_completion_scoring_proximity_and_frequency() {
+        let args = LspArgs {
+            root_folder: None,
+            min_word_len: 2,
+            tmux_source: false,
+            command_source: false,
+            debug: false,
+        };
+        let (service, _socket) = LspService::new(|client| Backend::new(args, client));
+        let backend = service.inner();
+
+        let doc_uri = Url::parse("file:///test.rs").unwrap();
+        // Line 0: apple_far
+        // Line 1..10: empty lines
+        // Line 11: apple_close
+        // Line 12: app
+        let content = "apple_far\n\n\n\n\n\n\n\n\n\n\napple_close\napp";
+
+        backend.did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: doc_uri.clone(),
+                language_id: "rust".to_string(),
+                version: 1,
+                text: content.to_string(),
+            },
+        }).await;
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: doc_uri.clone() },
+                position: Position { line: 12, character: 3 }, // On "app" at line 12
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        };
+
+        let response = backend.completion(params).await.unwrap().unwrap();
+        if let CompletionResponse::Array(items) = response {
+            assert!(items.len() >= 2);
+            // apple_close is on line 11 (1 line away), apple_far is on line 0 (12 lines away)
+            let labels: Vec<String> = items.into_iter().map(|item| item.label).collect();
+            assert_eq!(labels[0], "apple_close");
+            assert_eq!(labels[1], "apple_far");
+        } else {
+            panic!("Expected CompletionResponse::Array");
+        }
+    }
 
     #[test]
     fn test_snippet_folders_params_deserialization() {

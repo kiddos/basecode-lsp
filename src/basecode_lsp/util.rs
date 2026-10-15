@@ -1,6 +1,35 @@
 use super::file::FileItem;
-use super::snippet::Snippet;
+use hashbrown::HashMap;
 use tower_lsp::lsp_types::*;
+
+/// Calculates word scores in document content based on proximity to cursor line and word frequency.
+pub fn calculate_document_word_scores(
+    document_content: &str,
+    cursor_line: usize,
+    min_len: usize,
+) -> HashMap<String, f64> {
+    let mut scores = HashMap::new();
+    for (line_idx, line) in document_content.lines().enumerate() {
+        let dist = (line_idx as i64 - cursor_line as i64).abs() as f64;
+        let line_weight = 1.0 / (1.0 + dist);
+
+        for token in line.split_whitespace() {
+            let words = process_token(token, min_len);
+            for w in words {
+                *scores.entry(w).or_insert(0.0) += line_weight;
+            }
+        }
+    }
+    scores
+}
+
+/// Generates a zero-padded sort_text string so higher scores sort earlier lexicographically.
+pub fn format_sort_text(score: f64, label: &str) -> String {
+    let clamped_score = score.max(0.0);
+    let score_int = (clamped_score * 1000.0) as u64;
+    let rank = 1_000_000_000_u64.saturating_sub(score_int);
+    format!("{:010}_{}", rank, label)
+}
 
 pub fn valid_token_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
@@ -71,59 +100,6 @@ pub fn get_possible_current_word(current_line: &str, character: i32) -> Vec<Stri
     possible
 }
 
-pub fn words_uri_pair_to_completion_items(
-    words: Vec<(String, String)>,
-    suffixes: &Vec<String>,
-    completions: &mut Vec<CompletionItem>,
-    kind: CompletionItemKind,
-) {
-    let items: Vec<CompletionItem> = words
-        .iter()
-        .filter(|&item| !suffixes.contains(&item.0))
-        .map(|item| CompletionItem {
-            label: item.0.to_string(),
-            kind: Some(kind),
-            sort_text: Some(item.0.to_string()),
-            detail: Some(item.1.to_string()),
-            ..CompletionItem::default()
-        })
-        .collect();
-    completions.extend(items);
-}
-
-pub fn words_to_completion_items(
-    words: Vec<String>,
-    source: String,
-    suffixes: &Vec<String>,
-    completions: &mut Vec<CompletionItem>,
-    kind: CompletionItemKind,
-) {
-    let items: Vec<CompletionItem> = words
-        .iter()
-        .filter(|&word| !suffixes.contains(word))
-        .map(|word| CompletionItem {
-            label: word.clone(),
-            kind: Some(kind),
-            sort_text: Some(word.clone()),
-            detail: Some(source.to_string()),
-            ..CompletionItem::default()
-        })
-        .collect();
-    completions.extend(items);
-}
-
-pub fn snippets_to_completion_items(snippets: Vec<Snippet>, completions: &mut Vec<CompletionItem>) {
-    let items: Vec<CompletionItem> = snippets
-        .into_iter()
-        .map(|snippet| CompletionItem {
-            label: snippet.name.clone(),
-            kind: Some(CompletionItemKind::SNIPPET),
-            documentation: Some(Documentation::String(snippet.markdown())),
-            ..CompletionItem::default()
-        })
-        .collect();
-    completions.extend(items);
-}
 
 pub fn file_items_to_completion_items(
     file_items: Vec<FileItem>,
@@ -209,6 +185,31 @@ mod test {
 
         let suffixes = get_possible_current_word("   int best = numeric_limits<int>::max();", 35);
         assert_eq!(vec!["m", "ma", "max"], suffixes);
+    }
+
+    #[test]
+    fn test_calculate_document_word_scores() {
+        let doc = "foo bar\nbaz foo\nfoo";
+        let scores = calculate_document_word_scores(doc, 2, 2);
+        let score_foo_0 = 1.0 / 3.0; // line 0: dist 2
+        let score_foo_1 = 1.0 / 2.0; // line 1: dist 1
+        let score_foo_2 = 1.0 / 1.0; // line 2: dist 0
+        let expected_foo = score_foo_0 + score_foo_1 + score_foo_2;
+
+        let foo_score = scores.get("foo").cloned().unwrap_or(0.0);
+        let bar_score = scores.get("bar").cloned().unwrap_or(0.0);
+        let baz_score = scores.get("baz").cloned().unwrap_or(0.0);
+
+        assert!((foo_score - expected_foo).abs() < 1e-6);
+        assert!(foo_score > bar_score);
+        assert!(baz_score > bar_score);
+    }
+
+    #[test]
+    fn test_format_sort_text() {
+        let st1 = format_sort_text(100.0, "apple");
+        let st2 = format_sort_text(10.0, "banana");
+        assert!(st1 < st2, "Higher score item should sort before lower score item");
     }
 
     #[test]
