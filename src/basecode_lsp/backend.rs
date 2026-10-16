@@ -221,105 +221,140 @@ impl LanguageServer for Backend {
                     self.lsp_args.min_word_len,
                 );
 
+                #[derive(Debug)]
                 struct Candidate {
                     kind: CompletionItemKind,
-                    detail: String,
-                    trie_count: i32,
-                    in_tmux: bool,
-                    in_command: bool,
+                    word: String,
+                    count: i32,
+                    source: String,
+                    documentation: Option<String>,
+                    text_edit: Option<CompletionTextEdit>,
                 }
 
-                let mut candidates: HashMap<String, Candidate> = HashMap::new();
+                let mut candidates: Vec<Candidate> = Vec::new();
 
+                // 1. Trie source
                 let trie_lock = self.trie.lock().await;
                 let words = trie_lock.suggest_completions(&prefix);
                 for (word, uri, count) in words {
-                    candidates.insert(
+                    candidates.push(Candidate {
+                        kind: CompletionItemKind::TEXT,
                         word,
-                        Candidate {
-                            kind: CompletionItemKind::TEXT,
-                            detail: uri,
-                            trie_count: count,
-                            in_tmux: false,
-                            in_command: false,
-                        },
-                    );
+                        count,
+                        source: uri,
+                        documentation: None,
+                        text_edit: None,
+                    });
                 }
                 drop(trie_lock);
 
+                // 2. Tmux source
                 let tmux_words = self.prepare_tmux_words().await;
                 for word in tmux_words {
                     if word.starts_with(&prefix) {
-                        candidates
-                            .entry(word)
-                            .and_modify(|c| c.in_tmux = true)
-                            .or_insert(Candidate {
-                                kind: CompletionItemKind::REFERENCE,
-                                detail: "tmux".to_string(),
-                                trie_count: 0,
-                                in_tmux: true,
-                                in_command: false,
-                            });
+                        candidates.push(Candidate {
+                            kind: CompletionItemKind::REFERENCE,
+                            word,
+                            count: 1,
+                            source: "tmux".to_string(),
+                            documentation: None,
+                            text_edit: None,
+                        });
                     }
                 }
 
+                // 3. Command source
                 if self.lsp_args.command_source {
                     let command_words = get_command_completions();
                     for word in command_words {
                         if word.starts_with(&prefix) {
-                            candidates
-                                .entry(word)
-                                .and_modify(|c| c.in_command = true)
-                                .or_insert(Candidate {
-                                    kind: CompletionItemKind::KEYWORD,
-                                    detail: "command".to_string(),
-                                    trie_count: 0,
-                                    in_tmux: false,
-                                    in_command: false,
-                                });
+                            candidates.push(Candidate {
+                                kind: CompletionItemKind::KEYWORD,
+                                word,
+                                count: 1,
+                                source: "command".to_string(),
+                                documentation: None,
+                                text_edit: None,
+                            });
                         }
                     }
                 }
 
-                for (word, cand) in candidates {
-                    if suffixes.contains(&word) {
+                // 4. Snippet source
+                let snippets = self.suggest_snippets(&file_uri, &prefix).await;
+                for snippet in snippets {
+                    candidates.push(Candidate {
+                        kind: CompletionItemKind::SNIPPET,
+                        word: snippet.name.clone(),
+                        count: 1,
+                        source: "snippet".to_string(),
+                        documentation: Some(snippet.markdown()),
+                        text_edit: None,
+                    });
+                }
+
+                // 5. File source
+                if let Some(root_folder) = self.lsp_args.root_folder.clone() {
+                    let file_items = get_file_items(&current_line, &root_folder);
+                    let mut file_completions = Vec::new();
+                    file_items_to_completion_items(file_items, &params, &mut file_completions);
+                    for item in file_completions {
+                        candidates.push(Candidate {
+                            kind: item.kind.unwrap_or(CompletionItemKind::FILE),
+                            word: item.label,
+                            count: 1,
+                            source: "file".to_string(),
+                            documentation: None,
+                            text_edit: item.text_edit,
+                        });
+                    }
+                }
+
+                // Deduplicate candidates by (word, source) or word while aggregating count/source
+                let mut merged_candidates: HashMap<String, Candidate> = HashMap::new();
+                for cand in candidates {
+                    if suffixes.contains(&cand.word) {
                         continue;
                     }
+                    match merged_candidates.get_mut(&cand.word) {
+                        Some(existing) => {
+                            existing.count += cand.count;
+                            if existing.kind == CompletionItemKind::TEXT && cand.kind != CompletionItemKind::TEXT {
+                                existing.kind = cand.kind;
+                            }
+                            if existing.documentation.is_none() {
+                                existing.documentation = cand.documentation;
+                            }
+                            if existing.text_edit.is_none() {
+                                existing.text_edit = cand.text_edit;
+                            }
+                        }
+                        None => {
+                            merged_candidates.insert(cand.word.clone(), cand);
+                        }
+                    }
+                }
+
+                for (word, cand) in merged_candidates {
                     let doc_score = doc_scores.get(&word).cloned().unwrap_or(0.0);
-                    let tmux_bonus = if cand.in_tmux { 0.5 } else { 0.0 };
-                    let command_bonus = if cand.in_command { 0.1 } else { 0.0 };
-                    let score = doc_score * 10.0 + (cand.trie_count as f64) * 1.0 + tmux_bonus + command_bonus;
+                    let source_bonus = match cand.source.as_str() {
+                        "snippet" => 100.0,
+                        "file" => 50.0,
+                        "tmux" => 0.5,
+                        "command" => 0.1,
+                        _ => 0.0,
+                    };
+                    let score = doc_score * 10.0 + (cand.count as f64) * 1.0 + source_bonus;
 
                     completions.push(CompletionItem {
                         label: word.clone(),
                         kind: Some(cand.kind),
                         sort_text: Some(format_sort_text(score, &word)),
-                        detail: Some(cand.detail),
+                        detail: Some(cand.source),
+                        documentation: cand.documentation.map(Documentation::String),
+                        text_edit: cand.text_edit,
                         ..CompletionItem::default()
                     });
-                }
-
-                let snippets = self.suggest_snippets(&file_uri, &prefix).await;
-                for snippet in snippets {
-                    let snippet_score = 100.0;
-                    completions.push(CompletionItem {
-                        label: snippet.name.clone(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        sort_text: Some(format_sort_text(snippet_score, &snippet.name)),
-                        documentation: Some(Documentation::String(snippet.markdown())),
-                        ..CompletionItem::default()
-                    });
-                }
-
-                if let Some(root_folder) = self.lsp_args.root_folder.clone() {
-                    let file_items = get_file_items(&current_line, &root_folder);
-                    let mut file_completions = Vec::new();
-                    file_items_to_completion_items(file_items, &params, &mut file_completions);
-                    for mut item in file_completions {
-                        let file_score = 50.0;
-                        item.sort_text = Some(format_sort_text(file_score, &item.label));
-                        completions.push(item);
-                    }
                 }
 
                 completions.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
