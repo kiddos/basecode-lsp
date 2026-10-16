@@ -54,6 +54,16 @@ impl SnippetFoldersParams {
     }
 }
 
+#[derive(Debug)]
+pub struct Candidate {
+    pub kind: CompletionItemKind,
+    pub word: String,
+    pub count: i32,
+    pub source: String,
+    pub documentation: Option<String>,
+    pub text_edit: Option<CompletionTextEdit>,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct LspArgs {
@@ -221,96 +231,14 @@ impl LanguageServer for Backend {
                     self.lsp_args.min_word_len,
                 );
 
-                #[derive(Debug)]
-                struct Candidate {
-                    kind: CompletionItemKind,
-                    word: String,
-                    count: i32,
-                    source: String,
-                    documentation: Option<String>,
-                    text_edit: Option<CompletionTextEdit>,
-                }
-
                 let mut candidates: Vec<Candidate> = Vec::new();
 
-                // 1. Trie source
-                let trie_lock = self.trie.lock().await;
-                let words = trie_lock.suggest_completions(&prefix);
-                for (word, uri, count) in words {
-                    candidates.push(Candidate {
-                        kind: CompletionItemKind::TEXT,
-                        word,
-                        count,
-                        source: uri,
-                        documentation: None,
-                        text_edit: None,
-                    });
-                }
-                drop(trie_lock);
+                candidates.extend(self.get_trie_candidates(&prefix).await);
+                candidates.extend(self.get_tmux_candidates(&prefix).await);
+                candidates.extend(self.get_command_candidates(&prefix));
+                candidates.extend(self.get_snippet_candidates(&file_uri, &prefix).await);
+                candidates.extend(self.get_file_candidates(&current_line, &params));
 
-                // 2. Tmux source
-                let tmux_words = self.prepare_tmux_words().await;
-                for word in tmux_words {
-                    if word.starts_with(&prefix) {
-                        candidates.push(Candidate {
-                            kind: CompletionItemKind::REFERENCE,
-                            word,
-                            count: 1,
-                            source: "tmux".to_string(),
-                            documentation: None,
-                            text_edit: None,
-                        });
-                    }
-                }
-
-                // 3. Command source
-                if self.lsp_args.command_source {
-                    let command_words = get_command_completions();
-                    for word in command_words {
-                        if word.starts_with(&prefix) {
-                            candidates.push(Candidate {
-                                kind: CompletionItemKind::KEYWORD,
-                                word,
-                                count: 1,
-                                source: "command".to_string(),
-                                documentation: None,
-                                text_edit: None,
-                            });
-                        }
-                    }
-                }
-
-                // 4. Snippet source
-                let snippets = self.suggest_snippets(&file_uri, &prefix).await;
-                for snippet in snippets {
-                    candidates.push(Candidate {
-                        kind: CompletionItemKind::SNIPPET,
-                        word: snippet.name.clone(),
-                        count: 1,
-                        source: "snippet".to_string(),
-                        documentation: Some(snippet.markdown()),
-                        text_edit: None,
-                    });
-                }
-
-                // 5. File source
-                if let Some(root_folder) = self.lsp_args.root_folder.clone() {
-                    let file_items = get_file_items(&current_line, &root_folder);
-                    let mut file_completions = Vec::new();
-                    file_items_to_completion_items(file_items, &params, &mut file_completions);
-                    for item in file_completions {
-                        candidates.push(Candidate {
-                            kind: item.kind.unwrap_or(CompletionItemKind::FILE),
-                            word: item.label,
-                            count: 1,
-                            source: "file".to_string(),
-                            documentation: None,
-                            text_edit: item.text_edit,
-                        });
-                    }
-                }
-
-                // Deduplicate candidates by (word, source) or word while aggregating count/source
                 let mut merged_candidates: HashMap<String, Candidate> = HashMap::new();
                 for cand in candidates {
                     if suffixes.contains(&cand.word) {
@@ -471,6 +399,91 @@ async fn maybe_update_tmux_internal(
 }
 
 impl Backend {
+    async fn get_trie_candidates(&self, prefix: &str) -> Vec<Candidate> {
+        let trie_lock = self.trie.lock().await;
+        let words = trie_lock.suggest_completions(prefix);
+        words
+            .into_iter()
+            .map(|(word, uri, count)| Candidate {
+                kind: CompletionItemKind::TEXT,
+                word,
+                count,
+                source: uri,
+                documentation: None,
+                text_edit: None,
+            })
+            .collect()
+    }
+
+    async fn get_tmux_candidates(&self, prefix: &str) -> Vec<Candidate> {
+        let tmux_words = self.prepare_tmux_words().await;
+        tmux_words
+            .into_iter()
+            .filter(|w| w.starts_with(prefix))
+            .map(|word| Candidate {
+                kind: CompletionItemKind::REFERENCE,
+                word,
+                count: 1,
+                source: "tmux".to_string(),
+                documentation: None,
+                text_edit: None,
+            })
+            .collect()
+    }
+
+    fn get_command_candidates(&self, prefix: &str) -> Vec<Candidate> {
+        if !self.lsp_args.command_source {
+            return Vec::new();
+        }
+        let command_words = get_command_completions();
+        command_words
+            .into_iter()
+            .filter(|w| w.starts_with(prefix))
+            .map(|word| Candidate {
+                kind: CompletionItemKind::KEYWORD,
+                word,
+                count: 1,
+                source: "command".to_string(),
+                documentation: None,
+                text_edit: None,
+            })
+            .collect()
+    }
+
+    async fn get_snippet_candidates(&self, file_uri: &str, prefix: &str) -> Vec<Candidate> {
+        let snippets = self.suggest_snippets(file_uri, prefix).await;
+        snippets
+            .into_iter()
+            .map(|snippet| Candidate {
+                kind: CompletionItemKind::SNIPPET,
+                word: snippet.name.clone(),
+                count: 1,
+                source: "snippet".to_string(),
+                documentation: Some(snippet.markdown()),
+                text_edit: None,
+            })
+            .collect()
+    }
+
+    fn get_file_candidates(&self, current_line: &str, params: &CompletionParams) -> Vec<Candidate> {
+        let mut candidates = Vec::new();
+        if let Some(root_folder) = self.lsp_args.root_folder.clone() {
+            let file_items = get_file_items(current_line, &root_folder);
+            let mut file_completions = Vec::new();
+            file_items_to_completion_items(file_items, params, &mut file_completions);
+            for item in file_completions {
+                candidates.push(Candidate {
+                    kind: item.kind.unwrap_or(CompletionItemKind::FILE),
+                    word: item.label,
+                    count: 1,
+                    source: "file".to_string(),
+                    documentation: None,
+                    text_edit: item.text_edit,
+                });
+            }
+        }
+        candidates
+    }
 
     async fn suggest_snippets(&self, file_uri: &str, prefix: &str) -> Vec<Snippet> {
         let snippet_lock = self.snippets.lock().await;
