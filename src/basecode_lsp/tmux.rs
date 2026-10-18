@@ -1,23 +1,24 @@
 use regex::Regex;
-use std::process::Command;
+use tokio::process::Command;
 use super::util::*;
 
-fn is_tmux_executable() -> bool {
-    let output = Command::new("tmux").arg("-V").output();
+async fn is_tmux_executable() -> bool {
+    let output = Command::new("tmux").arg("-V").output().await;
     match output {
         Ok(_) => true,
         Err(_) => false,
     }
 }
 
-fn list_tmux_panes() -> Vec<String> {
+async fn list_tmux_panes() -> Vec<String> {
     // Execute the tmux list-panes command to get all panes
     let panes_output = Command::new("tmux")
         .arg("list-panes")
         .arg("-a")
         .arg("-F")
         .arg("#{pane_id}")
-        .output();
+        .output()
+        .await;
     if let Ok(output) = panes_output {
         if !output.stdout.is_empty() {
             let pane_ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -30,13 +31,14 @@ fn list_tmux_panes() -> Vec<String> {
     Vec::new()
 }
 
-fn capture_tmux_pane(pane_id: &str) -> Result<String, ()> {
+async fn capture_tmux_pane(pane_id: &str) -> Result<String, ()> {
     let command_output = Command::new("tmux")
         .arg("capture-pane")
         .arg("-p")
         .arg("-t")
         .arg(pane_id)
-        .output();
+        .output()
+        .await;
 
     if let Ok(output) = command_output {
         if !output.stdout.is_empty() {
@@ -54,14 +56,14 @@ fn capture_alphanumeric_sequences(input: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn retrieve_tmux_words(min_len: usize) -> Vec<String> {
-    if !is_tmux_executable() {
+pub async fn retrieve_tmux_words(min_len: usize) -> Vec<String> {
+    if !is_tmux_executable().await {
         return Vec::new();
     }
-    let panes = list_tmux_panes();
+    let panes = list_tmux_panes().await;
     let mut result: Vec<String> = Vec::new();
     for pane in panes.iter() {
-        if let Ok(content) = capture_tmux_pane(pane) {
+        if let Ok(content) = capture_tmux_pane(pane).await {
             let words = capture_alphanumeric_sequences(&content);
             result.extend(words);
         }
@@ -78,15 +80,15 @@ pub fn retrieve_tmux_words(min_len: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_is_tmux_executable() {
-        println!("{:?}", super::is_tmux_executable());
+    #[tokio::test]
+    async fn test_is_tmux_executable() {
+        println!("{:?}", super::is_tmux_executable().await);
     }
 
-    #[test]
-    fn test_list_tmux_panes() {
-        if super::is_tmux_executable() {
-            let panes = super::list_tmux_panes();
+    #[tokio::test]
+    async fn test_list_tmux_panes() {
+        if super::is_tmux_executable().await {
+            let panes = super::list_tmux_panes().await;
             println!("{:?}", panes);
         }
     }
@@ -98,23 +100,23 @@ mod tests {
         assert_eq!(words, vec!["Hello", "world", "123", "abc", "def"]);
     }
 
-    #[test]
-    fn test_capture_tmux_pane() {
-        if super::is_tmux_executable() {
-            let panes = super::list_tmux_panes();
+    #[tokio::test]
+    async fn test_capture_tmux_pane() {
+        if super::is_tmux_executable().await {
+            let panes = super::list_tmux_panes().await;
             if panes.is_empty() {
                 return;
             }
             let pane_id = &panes[0];
-            let content = super::capture_tmux_pane(pane_id);
+            let content = super::capture_tmux_pane(pane_id).await;
             assert!(content.is_ok());
         }
     }
 
-    #[test]
-    fn test_retrieve_tmux_words() {
-        if super::is_tmux_executable() {
-            let words = super::retrieve_tmux_words(3);
+    #[tokio::test]
+    async fn test_retrieve_tmux_words() {
+        if super::is_tmux_executable().await {
+            let words = super::retrieve_tmux_words(3).await;
             println!("{:?}", words);
         }
     }

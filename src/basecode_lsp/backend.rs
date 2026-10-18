@@ -391,7 +391,7 @@ async fn maybe_update_tmux_internal(
     tmux_source: Arc<Mutex<Vec<String>>>,
 ) {
     if lsp_args.tmux_source {
-        let tmux_content = retrieve_tmux_words(lsp_args.min_word_len);
+        let tmux_content = retrieve_tmux_words(lsp_args.min_word_len).await;
         let mut data = tmux_source.lock().await;
         data.clear();
         data.extend(tmux_content);
@@ -503,7 +503,7 @@ impl Backend {
 
     async fn maybe_update_tmux(&self) {
         if self.lsp_args.tmux_source {
-            let tmux_content = retrieve_tmux_words(self.lsp_args.min_word_len);
+            let tmux_content = retrieve_tmux_words(self.lsp_args.min_word_len).await;
             let mut data = self.tmux_source.lock().await;
             data.clear();
             data.extend(tmux_content);
