@@ -9,7 +9,7 @@ use clap::Parser;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use simple_log::*;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::*;
@@ -82,12 +82,12 @@ pub struct LspArgs {
 #[derive(Debug)]
 pub struct Backend {
     client: Client,
-    documents: Arc<Mutex<HashMap<String, String>>>,
-    snippets: Arc<Mutex<HashMap<String, Vec<Snippet>>>>,
-    trie: Arc<Mutex<Trie>>,
-    tmux_source: Arc<Mutex<Vec<String>>>,
-    indexed_content: Arc<Mutex<HashMap<String, String>>>,
-    debounce_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    documents: Arc<RwLock<HashMap<String, String>>>,
+    snippets: Arc<RwLock<HashMap<String, Vec<Snippet>>>>,
+    trie: Arc<RwLock<Trie>>,
+    tmux_source: Arc<RwLock<Vec<String>>>,
+    indexed_content: Arc<RwLock<HashMap<String, String>>>,
+    debounce_tasks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
     lsp_args: Arc<LspArgs>,
 }
 
@@ -120,10 +120,10 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         let text = params.text_document.text.clone();
 
-        let mut document_lock = self.documents.lock().await;
+        let mut document_lock = self.documents.write().await;
         document_lock.insert(uri.clone(), text.clone());
 
-        let mut indexed_lock = self.indexed_content.lock().await;
+        let mut indexed_lock = self.indexed_content.write().await;
         indexed_lock.insert(uri.clone(), text.clone());
 
         self.add_words(text, uri).await;
@@ -133,13 +133,13 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
 
-        let mut tasks_lock = self.debounce_tasks.lock().await;
+        let mut tasks_lock = self.debounce_tasks.write().await;
         if let Some(task) = tasks_lock.remove(&uri) {
             task.abort();
         }
 
-        let mut document_lock = self.documents.lock().await;
-        let mut indexed_lock = self.indexed_content.lock().await;
+        let mut document_lock = self.documents.write().await;
+        let mut indexed_lock = self.indexed_content.write().await;
 
         if let Some(content) = indexed_lock.remove(&uri) {
             self.remove_words(content).await;
@@ -151,7 +151,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
 
-        let mut document_lock = self.documents.lock().await;
+        let mut document_lock = self.documents.write().await;
         if let Some(content) = document_lock.get_mut(&uri) {
             if let Some(last_change) = params.content_changes.last() {
                 *content = last_change.text.clone();
@@ -163,7 +163,7 @@ impl LanguageServer for Backend {
         }
         drop(document_lock);
 
-        let mut tasks_lock = self.debounce_tasks.lock().await;
+        let mut tasks_lock = self.debounce_tasks.write().await;
         if let Some(task) = tasks_lock.remove(&uri) {
             task.abort();
         }
@@ -180,12 +180,12 @@ impl LanguageServer for Backend {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             let new_content = {
-                let doc_lock = documents.lock().await;
+                let doc_lock = documents.read().await;
                 doc_lock.get(&uri_clone).cloned()
             };
 
             if let Some(new_content) = new_content {
-                let mut indexed_lock = indexed_content.lock().await;
+                let mut indexed_lock = indexed_content.write().await;
                 let old_content = indexed_lock.get(&uri_clone).cloned();
 
                 if let Some(old) = old_content {
@@ -221,7 +221,7 @@ impl LanguageServer for Backend {
                 let suffixes = get_possible_current_word(&current_line, position.character as i32);
 
                 let doc_content = {
-                    let doc_lock = self.documents.lock().await;
+                    let doc_lock = self.documents.read().await;
                     doc_lock.get(&file_uri).cloned().unwrap_or_default()
                 };
 
@@ -296,12 +296,12 @@ impl Backend {
     pub fn new(lsp_args: LspArgs, client: Client) -> Self {
         return Self {
             client,
-            documents: Arc::new(Mutex::new(HashMap::new())),
-            snippets: Arc::new(Mutex::new(HashMap::new())),
-            trie: Arc::new(Mutex::new(Trie::new())),
-            tmux_source: Arc::new(Mutex::new(Vec::new())),
-            indexed_content: Arc::new(Mutex::new(HashMap::new())),
-            debounce_tasks: Arc::new(Mutex::new(HashMap::new())),
+            documents: Arc::new(RwLock::new(HashMap::new())),
+            snippets: Arc::new(RwLock::new(HashMap::new())),
+            trie: Arc::new(RwLock::new(Trie::new())),
+            tmux_source: Arc::new(RwLock::new(Vec::new())),
+            indexed_content: Arc::new(RwLock::new(HashMap::new())),
+            debounce_tasks: Arc::new(RwLock::new(HashMap::new())),
             lsp_args: Arc::new(lsp_args),
         };
     }
@@ -311,7 +311,7 @@ impl Backend {
         let message = format!("loading snippet folders: {:?}", folders);
         info!("{}", message);
         self.client.log_message(MessageType::INFO, message).await;
-        let mut snippets_lock = self.snippets.lock().await;
+        let mut snippets_lock = self.snippets.write().await;
         prepare_snippets(&folders, &mut snippets_lock);
     }
 
@@ -333,7 +333,7 @@ impl Backend {
     async fn get_current_line(&self, params: &CompletionParams) -> Option<String> {
         let text_document_position = params.text_document_position.clone();
         let uri = text_document_position.text_document.uri.to_string();
-        let document_lock = self.documents.lock().await;
+        let document_lock = self.documents.read().await;
         let position = text_document_position.position;
         if let Some(content) = document_lock.get(&uri) {
             let current_line: Option<&str> = content.split("\n").nth(position.line as usize);
@@ -351,7 +351,7 @@ fn is_good_size(content: &str) -> bool {
 }
 
 async fn add_words_internal(
-    trie: Arc<Mutex<Trie>>,
+    trie: Arc<RwLock<Trie>>,
     client: Client,
     lsp_args: Arc<LspArgs>,
     content: String,
@@ -363,7 +363,7 @@ async fn add_words_internal(
         return;
     }
 
-    let mut trie_lock = trie.lock().await;
+    let mut trie_lock = trie.write().await;
     for token in content.split_whitespace() {
         let words = process_token(token, lsp_args.min_word_len);
         for w in words {
@@ -372,12 +372,12 @@ async fn add_words_internal(
     }
 }
 
-async fn remove_words_internal(trie: Arc<Mutex<Trie>>, lsp_args: Arc<LspArgs>, content: String) {
+async fn remove_words_internal(trie: Arc<RwLock<Trie>>, lsp_args: Arc<LspArgs>, content: String) {
     if !is_good_size(&content) {
         return;
     }
 
-    let mut trie_lock = trie.lock().await;
+    let mut trie_lock = trie.write().await;
     for token in content.split_whitespace() {
         let words = process_token(token, lsp_args.min_word_len);
         for w in words {
@@ -388,11 +388,11 @@ async fn remove_words_internal(trie: Arc<Mutex<Trie>>, lsp_args: Arc<LspArgs>, c
 
 async fn maybe_update_tmux_internal(
     lsp_args: Arc<LspArgs>,
-    tmux_source: Arc<Mutex<Vec<String>>>,
+    tmux_source: Arc<RwLock<Vec<String>>>,
 ) {
     if lsp_args.tmux_source {
         let tmux_content = retrieve_tmux_words(lsp_args.min_word_len);
-        let mut data = tmux_source.lock().await;
+        let mut data = tmux_source.write().await;
         data.clear();
         data.extend(tmux_content);
     }
@@ -400,7 +400,7 @@ async fn maybe_update_tmux_internal(
 
 impl Backend {
     async fn get_trie_candidates(&self, prefix: &str) -> Vec<Candidate> {
-        let trie_lock = self.trie.lock().await;
+        let trie_lock = self.trie.read().await;
         let words = trie_lock.suggest_completions(prefix);
         words
             .into_iter()
@@ -486,7 +486,7 @@ impl Backend {
     }
 
     async fn suggest_snippets(&self, file_uri: &str, prefix: &str) -> Vec<Snippet> {
-        let snippet_lock = self.snippets.lock().await;
+        let snippet_lock = self.snippets.read().await;
         let snippet_names = get_snippet_names(file_uri);
         let mut result = Vec::new();
         for &snippet_name in snippet_names.iter() {
@@ -504,14 +504,14 @@ impl Backend {
     async fn maybe_update_tmux(&self) {
         if self.lsp_args.tmux_source {
             let tmux_content = retrieve_tmux_words(self.lsp_args.min_word_len);
-            let mut data = self.tmux_source.lock().await;
+            let mut data = self.tmux_source.write().await;
             data.clear();
             data.extend(tmux_content);
         }
     }
 
     async fn prepare_tmux_words(&self) -> Vec<String> {
-        let data = self.tmux_source.lock().await;
+        let data = self.tmux_source.read().await;
         let mut output = Vec::new();
         for word in data.iter() {
             output.push(word.clone());
