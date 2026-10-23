@@ -229,4 +229,70 @@ mod test {
         let tokens = process_token("   TrieNode* tn = node->failure", 3);
         assert_eq!(vec!["TrieNode", "node", "failure"], tokens);
     }
+
+    #[test]
+    fn test_file_items_to_completion_items() {
+        let file_items = vec![
+            FileItem {
+                filename: "foo.txt".to_string(),
+                pos: 10,
+                is_dir: false,
+            },
+            FileItem {
+                filename: "src".to_string(),
+                pos: 10,
+                is_dir: true,
+            },
+        ];
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///dummy.txt").unwrap(),
+                },
+                position: Position {
+                    line: 2,
+                    character: 15,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams {
+                work_done_token: None,
+            },
+            partial_result_params: PartialResultParams {
+                partial_result_token: None,
+            },
+            context: None,
+        };
+
+        let mut completions = Vec::new();
+        file_items_to_completion_items(file_items, &params, &mut completions);
+
+        assert_eq!(completions.len(), 2);
+
+        let comp1 = &completions[0];
+        assert_eq!(comp1.label, "foo.txt");
+        assert_eq!(comp1.kind, Some(CompletionItemKind::FILE));
+        if let Some(CompletionTextEdit::Edit(edit)) = &comp1.text_edit {
+            assert_eq!(edit.new_text, "foo.txt");
+            assert_eq!(edit.range.start.line, 2);
+            assert_eq!(edit.range.start.character, 11);
+            assert_eq!(edit.range.end.line, 2);
+            assert_eq!(edit.range.end.character, 17);
+        } else {
+            panic!("Expected Edit");
+        }
+
+        let comp2 = &completions[1];
+        assert_eq!(comp2.label, "src");
+        assert_eq!(comp2.kind, Some(CompletionItemKind::FOLDER));
+        if let Some(CompletionTextEdit::Edit(edit)) = &comp2.text_edit {
+            assert_eq!(edit.new_text, "src");
+            assert_eq!(edit.range.start.line, 2);
+            assert_eq!(edit.range.start.character, 11);
+            assert_eq!(edit.range.end.line, 2);
+            assert_eq!(edit.range.end.character, 13);
+        } else {
+            panic!("Expected Edit");
+        }
+    }
 }

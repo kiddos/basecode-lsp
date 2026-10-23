@@ -73,4 +73,40 @@ mod tests {
         }
         assert_ne!(0, items.len());
     }
+
+    #[test]
+    fn test_is_executable() {
+        let dir = env::temp_dir();
+
+        // Use a unique file name instead of a static one to avoid race conditions.
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let exec_file_path = dir.join(format!("test_is_executable_exec_{}.sh", timestamp));
+        fs::write(&exec_file_path, "#!/bin/bash\necho hello").unwrap();
+
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&exec_file_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&exec_file_path, perms).unwrap();
+
+            assert!(is_executable(&exec_file_path));
+        }
+
+        let non_exec_file_path = dir.join(format!("test_is_executable_nonexec_{}.txt", timestamp));
+        fs::write(&non_exec_file_path, "hello world").unwrap();
+
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&non_exec_file_path).unwrap().permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&non_exec_file_path, perms).unwrap();
+
+            assert!(!is_executable(&non_exec_file_path));
+        }
+
+        assert!(!is_executable(&dir)); // Directories should return false
+
+        let _ = fs::remove_file(&exec_file_path);
+        let _ = fs::remove_file(&non_exec_file_path);
+    }
 }
