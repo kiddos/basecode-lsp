@@ -602,4 +602,33 @@ mod tests {
         let params: SnippetFoldersParams = serde_json::from_value(val).unwrap();
         assert_eq!(params.into_vec(), vec!["/path/single"]);
     }
+
+    #[tokio::test]
+    async fn test_maybe_update_tmux_and_prepare_tmux_words() {
+        let (service, _) = tower_lsp::LspService::build(|client| Backend::new(LspArgs {
+            debug: false,
+            min_word_len: 2,
+            tmux_source: true,
+            command_source: true,
+            root_folder: None,
+        }, client)).finish();
+
+        let backend = service.inner();
+
+        // Ensure tmux_source vector is empty initially.
+        {
+            let data = backend.tmux_source.read().await;
+            assert!(data.is_empty());
+        }
+
+        // This won't actually do anything without tmux running but verifies code path is exercised.
+        backend.maybe_update_tmux().await;
+
+        // Can prepare from empty/mock data safely
+        let words = backend.prepare_tmux_words().await;
+
+        // We can't strictly assert the words since it relies on tmux being installed or having active panes,
+        // but it shouldn't panic.
+        let _ = words.len();
+    }
 }
